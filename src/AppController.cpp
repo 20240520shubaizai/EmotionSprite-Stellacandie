@@ -36,6 +36,8 @@
 #include <QDateTime>
 #include <QTime>
 #include <QFileInfo>
+#include <QDesktopServices>
+#include <QUrl>
 
 #include <algorithm>
 
@@ -62,9 +64,17 @@ void AppController::exportCocosRoomState()
 void AppController::openCocosRoomPrototype()
 {
     exportCocosRoomState();
+    const QString nativeRoom=QStringLiteral("D:/codex_qxjl/cocos/StellacandieRoom/build/windows/StellacandieRoom.exe");
+    const QString webRoom=QStringLiteral("D:/codex_qxjl/cocos/StellacandieRoom/build/web-desktop/index.html");
     const QString editor=QStringLiteral("D:/Cocos/Creator/3.8.8/CocosCreator.exe");
     const QString project=QStringLiteral("D:/codex_qxjl/cocos/StellacandieRoom");
-    if(QFileInfo::exists(editor)&&QFileInfo::exists(project))QProcess::startDetached(editor,{QStringLiteral("--project"),project});
+    if(QFileInfo::exists(nativeRoom)) {
+        QProcess::startDetached(nativeRoom, {}, QFileInfo(nativeRoom).absolutePath());
+    } else if(QFileInfo::exists(webRoom)) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(webRoom));
+    } else if(QFileInfo::exists(editor)&&QFileInfo::exists(project)) {
+        QProcess::startDetached(editor,{QStringLiteral("--project"),project});
+    }
 }
 
 AppController::AppController(QObject *parent)
@@ -487,6 +497,7 @@ void AppController::createTrayIcon()
     auto *summaryAction = menu->addAction(QStringLiteral("AI总结魔法"));
     auto *dreamAction = menu->addAction(QStringLiteral("梦境星星瓶"));
     auto *lollipopAction = menu->addAction(QStringLiteral("晨间糖果罐"));
+    auto *cocosRoomAction = menu->addAction(QStringLiteral("打开精灵房间（Cocos）"));
     menu->addSeparator();
     auto *quitAction = menu->addAction(QStringLiteral("退出"));
 
@@ -501,6 +512,7 @@ void AppController::createTrayIcon()
     connect(summaryAction,&QAction::triggered,this,&AppController::openSummaryMagic);
     connect(dreamAction,&QAction::triggered,this,&AppController::openDreamBottle);
     connect(lollipopAction,&QAction::triggered,this,&AppController::openMorningLollipop);
+    connect(cocosRoomAction,&QAction::triggered,this,&AppController::openCocosRoomPrototype);
     connect(this, &AppController::alwaysOnTopChanged, topAction, [this, topAction] {
         topAction->setChecked(m_alwaysOnTop);
     });
