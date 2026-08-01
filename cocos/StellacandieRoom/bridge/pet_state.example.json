@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 1,
+  "revision": 1,
+  "updatedAt": "2026-08-01T15:00:00+08:00",
+  "mood": 78,
+  "energy": 55,
+  "health": 100,
+  "satiety": 66,
+  "intimacy": 86,
+  "emotion": "happy",
+  "activity": "idle",
+  "weather": "clear",
+  "timePeriod": "afternoon"
+}

@@ -31,8 +31,41 @@
 #include <QStandardPaths>
 #include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QProcess>
+#include <QSaveFile>
+#include <QDateTime>
+#include <QTime>
+#include <QFileInfo>
 
 #include <algorithm>
+
+void AppController::exportCocosRoomState()
+{
+    const QStringList emotions{QStringLiteral("neutral"),QStringLiteral("neutral"),QStringLiteral("happy"),
+        QStringLiteral("curious"),QStringLiteral("angry"),QStringLiteral("pouting"),QStringLiteral("affectionate"),
+        QStringLiteral("shy"),QStringLiteral("sleepy"),QStringLiteral("scared"),QStringLiteral("sick"),
+        QStringLiteral("recovering"),QStringLiteral("studying")};
+    const int hour=QTime::currentTime().hour();
+    const QString period=hour<6?QStringLiteral("night"):hour<12?QStringLiteral("morning"):
+        hour<18?QStringLiteral("afternoon"):QStringLiteral("evening");
+    const QString dir=QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).filePath(QStringLiteral("cocos_bridge"));
+    QDir().mkpath(dir);
+    const QJsonObject state{{"protocolVersion",1},{"revision",QDateTime::currentMSecsSinceEpoch()},
+        {"updatedAt",QDateTime::currentDateTime().toString(Qt::ISODate)},{"mood",mood()},{"energy",energy()},
+        {"health",health()},{"satiety",fullness()},{"intimacy",closeness()},
+        {"emotion",emotions.value(currentStateIndex(),QStringLiteral("neutral"))},{"activity",QStringLiteral("idle")},
+        {"weather",lollipopWeather().isEmpty()?QStringLiteral("clear"):lollipopWeather()},{"timePeriod",period}};
+    QSaveFile file(QDir(dir).filePath(QStringLiteral("pet_state.json")));
+    if(file.open(QIODevice::WriteOnly)){file.write(QJsonDocument(state).toJson(QJsonDocument::Indented));file.commit();}
+}
+
+void AppController::openCocosRoomPrototype()
+{
+    exportCocosRoomState();
+    const QString editor=QStringLiteral("D:/Cocos/Creator/3.8.8/CocosCreator.exe");
+    const QString project=QStringLiteral("D:/codex_qxjl/cocos/StellacandieRoom");
+    if(QFileInfo::exists(editor)&&QFileInfo::exists(project))QProcess::startDetached(editor,{QStringLiteral("--project"),project});
+}
 
 AppController::AppController(QObject *parent)
     : QObject(parent)

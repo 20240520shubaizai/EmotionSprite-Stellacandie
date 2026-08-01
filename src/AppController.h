@@ -222,6 +222,8 @@ public:
     void createTrayIcon();
 
 public slots:
+    void exportCocosRoomState();
+    void openCocosRoomPrototype();
     void nextState();
     void previousState();
     void setState(int index);
