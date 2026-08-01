@@ -1,6 +1,7 @@
 import { _decorator, Component, Node, Sprite, SpriteFrame, tween, Tween, Vec3 } from 'cc';
 import { PetEmotion, PetSnapshot } from '../core/PetTypes';
 import { roomEvents, RoomEvent } from '../core/EventBus';
+import { PetFaceRig } from './PetFaceRig';
 const { ccclass, property } = _decorator;
 
 type Behavior = 'idle' | 'wander' | 'window' | 'sleep' | 'eat' | 'study' | 'sick' | 'react';
@@ -10,12 +11,11 @@ export class PetBehaviorController extends Component {
     @property(Sprite) public body: Sprite | null = null;
     @property(Node) public detailLayer: Node | null = null;
     @property([SpriteFrame]) public emotionFrames: SpriteFrame[] = [];
-    @property(SpriteFrame) public blinkFrame: SpriteFrame | null = null;
+    @property(PetFaceRig) public faceRig: PetFaceRig | null = null;
     private behavior: Behavior = 'idle';
     private emotion: PetEmotion = 'neutral';
     private snapshot: PetSnapshot | null = null;
     private currentFrame: SpriteFrame | null = null;
-    private blinking = false;
     private detailTimer = 0;
     private readonly visualBaseScale = new Vec3(1, 1, 1);
 
@@ -70,7 +70,7 @@ export class PetBehaviorController extends Component {
         const frame = this.emotionFrames[order.indexOf(emotion)];
         if (frame && this.body) {
             this.currentFrame = frame;
-            if (!this.blinking) this.body.spriteFrame = frame;
+            this.body.spriteFrame = frame;
         }
     }
 
@@ -132,21 +132,7 @@ export class PetBehaviorController extends Component {
     }
 
     private blink(doubleBlink = false) {
-        if (!this.body || !this.blinkFrame || this.blinking) return;
-        this.blinking = true;
-        this.body.spriteFrame = this.blinkFrame;
-        this.scheduleOnce(() => {
-            if (this.body && this.currentFrame) this.body.spriteFrame = this.currentFrame;
-            if (doubleBlink) {
-                this.scheduleOnce(() => {
-                    if (this.body && this.blinkFrame) this.body.spriteFrame = this.blinkFrame;
-                    this.scheduleOnce(() => {
-                        if (this.body && this.currentFrame) this.body.spriteFrame = this.currentFrame;
-                        this.blinking = false;
-                    }, 0.105);
-                }, 0.12);
-            } else this.blinking = false;
-        }, 0.105);
+        this.faceRig?.blink(doubleBlink);
     }
     private earTwitch() { this.pulseDetail(0.12, new Vec3(1.015, 1.01, 1)); }
     private lookAround() {

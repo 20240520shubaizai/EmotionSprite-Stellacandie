@@ -2,6 +2,7 @@ import { _decorator, Component, Node, resources, Sprite, SpriteFrame, UITransfor
 import { StateBridge } from './bridge/StateBridge';
 import { PetBehaviorController } from './pet/PetBehaviorController';
 import { PetInteraction } from './pet/PetInteraction';
+import { PetFaceRig } from './pet/PetFaceRig';
 const { ccclass } = _decorator;
 
 @ccclass('RoomBootstrap')
@@ -34,20 +35,22 @@ export class RoomBootstrap extends Component {
         pet.setPosition(-70, -145);
         pet.addComponent(UITransform).setContentSize(280, 280);
 
-        const visual = new Node('Visual');
-        visual.parent = pet;
-        visual.addComponent(UITransform).setContentSize(280, 280);
-        const sprite = visual.addComponent(Sprite);
+        const bodyRoot = new Node('BodyRoot');
+        bodyRoot.parent = pet;
+        bodyRoot.addComponent(UITransform).setContentSize(280, 280);
+        const sprite = bodyRoot.addComponent(Sprite);
         sprite.sizeMode = Sprite.SizeMode.CUSTOM;
+
+        const headDetailRoot = new Node('HeadDetailRoot');
+        headDetailRoot.parent = bodyRoot;
+        headDetailRoot.addComponent(UITransform).setContentSize(280, 280);
+        const faceRig = headDetailRoot.addComponent(PetFaceRig);
 
         const behavior = pet.addComponent(PetBehaviorController);
         behavior.body = sprite;
-        behavior.detailLayer = visual;
+        behavior.detailLayer = bodyRoot;
+        behavior.faceRig = faceRig;
         pet.addComponent(PetInteraction);
-
-        resources.load('animation_frames/stellacandie_00_neutral_blink_v1/spriteFrame', SpriteFrame, (error, frame) => {
-            if (!error && frame) behavior.blinkFrame = frame;
-        });
 
         resources.loadDir('states', SpriteFrame, (error, frames) => {
             if (error || !frames.length) {
