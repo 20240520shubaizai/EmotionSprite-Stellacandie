@@ -8,6 +8,7 @@
 /local/
 /build/
 /profiles/
+/settings/v2/packages/cocos-service.json
 /native/engine/android/**/*/assets
 
 #//////////////////////////

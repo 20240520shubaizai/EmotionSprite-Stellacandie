@@ -45,6 +45,10 @@ export class RoomBootstrap extends Component {
         behavior.detailLayer = visual;
         pet.addComponent(PetInteraction);
 
+        resources.load('animation_frames/stellacandie_00_neutral_blink_v1/spriteFrame', SpriteFrame, (error, frame) => {
+            if (!error && frame) behavior.blinkFrame = frame;
+        });
+
         resources.loadDir('states', SpriteFrame, (error, frames) => {
             if (error || !frames.length) {
                 console.error('[RoomBootstrap] state images unavailable', error);
@@ -52,7 +56,7 @@ export class RoomBootstrap extends Component {
             }
             const ordered = frames.sort((a, b) => a.name.localeCompare(b.name));
             behavior.emotionFrames = ordered;
-            sprite.spriteFrame = ordered[0];
+            behavior.setInitialFrame(ordered[0]);
         });
     }
 }
