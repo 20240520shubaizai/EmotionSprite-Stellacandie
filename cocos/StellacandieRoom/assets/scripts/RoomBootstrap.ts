@@ -20,7 +20,9 @@ export class RoomBootstrap extends Component {
         g.fillColor = this.color('#E8CFC0'); g.roundRect(-440, -220, 245, 145, 22); g.fill();
         g.fillColor = this.color('#D9EAF1'); g.roundRect(190, 45, 220, 170, 18); g.fill();
         g.fillColor = this.color('#F2DEAE'); g.roundRect(-40, -210, 220, 105, 18); g.fill();
-        this.label('小床', -320, -160); this.label('窗边', 300, 125); this.label('零食角', 70, -165);
+        this.label('小床', -320, -160);
+        this.label('窗边', 300, 125);
+        this.label('零食角', 70, -165);
     }
 
     private label(text: string, x: number, y: number) {
@@ -32,10 +34,12 @@ export class RoomBootstrap extends Component {
     private color(hex: string): Color { return Color.fromHEX(new Color(), hex); }
 
     private createPet() {
-        const pet = new Node('Stellacandie'); pet.parent = this.node; pet.setPosition(0, -35); pet.setScale(new Vec3(0.62, 0.62, 1));
+        const pet = new Node('Stellacandie'); pet.parent = this.node; pet.setPosition(0, -35);
         pet.addComponent(UITransform).setContentSize(420, 420);
-        const sprite = pet.addComponent(Sprite);
-        const behavior = pet.addComponent(PetBehaviorController); behavior.body = sprite; behavior.detailLayer = pet;
+        const visual = new Node('Visual'); visual.parent = pet; visual.setScale(new Vec3(0.62, 0.62, 1));
+        visual.addComponent(UITransform).setContentSize(420, 420);
+        const sprite = visual.addComponent(Sprite);
+        const behavior = pet.addComponent(PetBehaviorController); behavior.body = sprite; behavior.detailLayer = visual;
         pet.addComponent(PetInteraction);
         resources.loadDir('states', SpriteFrame, (error, frames) => {
             if (error || !frames.length) { console.error('[RoomBootstrap] state images unavailable', error); return; }

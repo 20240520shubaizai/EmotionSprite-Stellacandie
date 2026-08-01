@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Sprite, SpriteFrame, tween, Vec3 } from 'cc';
+import { _decorator, Component, Node, Sprite, SpriteFrame, tween, Tween, Vec3 } from 'cc';
 import { PetEmotion, PetSnapshot } from '../core/PetTypes';
 import { roomEvents, RoomEvent } from '../core/EventBus';
 const { ccclass, property } = _decorator;
@@ -11,9 +11,9 @@ export class PetBehaviorController extends Component {
     @property(Node) public detailLayer: Node | null = null;
     @property([SpriteFrame]) public emotionFrames: SpriteFrame[] = [];
     private behavior: Behavior = 'idle';
-    private emotion: PetEmotion = 'neutral';
     private snapshot: PetSnapshot | null = null;
     private detailTimer = 0;
+    private readonly visualBaseScale = new Vec3(0.62, 0.62, 1);
 
     start() {
         roomEvents.on(RoomEvent.SNAPSHOT_CHANGED, this.onSnapshot, this);
@@ -26,7 +26,6 @@ export class PetBehaviorController extends Component {
 
     private onSnapshot(snapshot: PetSnapshot) {
         this.snapshot = snapshot;
-        this.emotion = snapshot.emotion;
         this.applyEmotionFrame(snapshot.emotion);
         this.chooseAutonomousBehavior();
     }
@@ -58,29 +57,36 @@ export class PetBehaviorController extends Component {
         if (frame && this.body) this.body.spriteFrame = frame;
     }
 
+    private visualTarget(): Node { return this.detailLayer ?? this.node; }
+
     private playBreathing() {
-        tween(this.node).stop();
-        this.node.setScale(Vec3.ONE);
-        tween(this.node).repeatForever(
-            tween().to(1.45, { scale: new Vec3(1.018, 0.988, 1) }, { easing: 'sineInOut' })
-                .to(1.45, { scale: Vec3.ONE }, { easing: 'sineInOut' })
+        const target = this.visualTarget();
+        Tween.stopAllByTarget(target);
+        target.setScale(this.visualBaseScale);
+        tween(target).repeatForever(
+            tween().to(1.45, { scale: new Vec3(0.631, 0.613, 1) }, { easing: 'sineInOut' })
+                .to(1.45, { scale: this.visualBaseScale }, { easing: 'sineInOut' })
         ).start();
     }
 
     private sickBreathing() {
-        tween(this.node).stop();
-        tween(this.node).repeatForever(
-            tween().to(2.3, { scale: new Vec3(1.008, 0.995, 1) }).to(2.3, { scale: Vec3.ONE })
+        const target = this.visualTarget();
+        Tween.stopAllByTarget(target);
+        tween(target).repeatForever(
+            tween().to(2.3, { scale: new Vec3(0.625, 0.617, 1) })
+                .to(2.3, { scale: this.visualBaseScale })
         ).start();
     }
 
     private curlDown() {
-        tween(this.node).stop();
-        tween(this.node).to(0.55, { scale: new Vec3(1.04, 0.82, 1) }, { easing: 'quadOut' }).start();
+        const target = this.visualTarget();
+        Tween.stopAllByTarget(target);
+        tween(target).to(0.55, { scale: new Vec3(0.645, 0.508, 1) }, { easing: 'quadOut' }).start();
     }
 
     private walkToRandomPoint() {
         const x = -330 + Math.random() * 660;
+        Tween.stopAllByTarget(this.node);
         tween(this.node).to(2.2, { position: new Vec3(x, this.node.position.y, 0) }, { easing: 'sineInOut' })
             .call(() => this.changeBehavior('idle')).start();
     }
@@ -97,14 +103,19 @@ export class PetBehaviorController extends Component {
     private blink() { this.pulseDetail(0.16, new Vec3(1, 0.96, 1)); }
     private earTwitch() { this.pulseDetail(0.12, new Vec3(1.015, 1.01, 1)); }
     private lookAround() {
-        tween(this.node).by(0.2, { angle: 3 }).by(0.35, { angle: -6 }).by(0.2, { angle: 3 }).start();
+        const target = this.visualTarget();
+        tween(target).by(0.2, { angle: 3 }).by(0.35, { angle: -6 }).by(0.2, { angle: 3 }).start();
     }
     private stretch() {
-        tween(this.node).to(0.35, { scale: new Vec3(1.08, 0.94, 1) }, { easing: 'quadOut' })
-            .to(0.45, { scale: Vec3.ONE }, { easing: 'backOut' }).start();
+        const target = this.visualTarget();
+        Tween.stopAllByTarget(target);
+        tween(target).to(0.35, { scale: new Vec3(0.67, 0.583, 1) }, { easing: 'quadOut' })
+            .to(0.45, { scale: this.visualBaseScale }, { easing: 'backOut' })
+            .call(() => this.playBreathing()).start();
     }
     private pulseDetail(seconds: number, scale: Vec3) {
         if (!this.detailLayer) return;
-        tween(this.detailLayer).to(seconds, { scale }).to(seconds, { scale: Vec3.ONE }).start();
+        const scaled = new Vec3(this.visualBaseScale.x * scale.x, this.visualBaseScale.y * scale.y, 1);
+        tween(this.detailLayer).to(seconds, { scale: scaled }).to(seconds, { scale: this.visualBaseScale }).start();
     }
 }
