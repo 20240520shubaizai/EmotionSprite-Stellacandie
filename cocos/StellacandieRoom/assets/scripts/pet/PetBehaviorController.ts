@@ -13,7 +13,7 @@ export class PetBehaviorController extends Component {
     private behavior: Behavior = 'idle';
     private snapshot: PetSnapshot | null = null;
     private detailTimer = 0;
-    private readonly visualBaseScale = new Vec3(0.62, 0.62, 1);
+    private readonly visualBaseScale = new Vec3(1, 1, 1);
 
     start() {
         roomEvents.on(RoomEvent.SNAPSHOT_CHANGED, this.onSnapshot, this);
@@ -64,7 +64,7 @@ export class PetBehaviorController extends Component {
         Tween.stopAllByTarget(target);
         target.setScale(this.visualBaseScale);
         tween(target).repeatForever(
-            tween().to(1.45, { scale: new Vec3(0.631, 0.613, 1) }, { easing: 'sineInOut' })
+            tween().to(1.45, { scale: new Vec3(1.018, 0.988, 1) }, { easing: 'sineInOut' })
                 .to(1.45, { scale: this.visualBaseScale }, { easing: 'sineInOut' })
         ).start();
     }
@@ -73,7 +73,7 @@ export class PetBehaviorController extends Component {
         const target = this.visualTarget();
         Tween.stopAllByTarget(target);
         tween(target).repeatForever(
-            tween().to(2.3, { scale: new Vec3(0.625, 0.617, 1) })
+            tween().to(2.3, { scale: new Vec3(1.008, 0.995, 1) })
                 .to(2.3, { scale: this.visualBaseScale })
         ).start();
     }
@@ -81,13 +81,13 @@ export class PetBehaviorController extends Component {
     private curlDown() {
         const target = this.visualTarget();
         Tween.stopAllByTarget(target);
-        tween(target).to(0.55, { scale: new Vec3(0.645, 0.508, 1) }, { easing: 'quadOut' }).start();
+        tween(target).to(0.55, { scale: new Vec3(1.04, 0.82, 1) }, { easing: 'quadOut' }).start();
     }
 
     private walkToRandomPoint() {
-        const x = -330 + Math.random() * 660;
+        const x = -420 + Math.random() * 840;
         Tween.stopAllByTarget(this.node);
-        tween(this.node).to(2.2, { position: new Vec3(x, this.node.position.y, 0) }, { easing: 'sineInOut' })
+        tween(this.node).to(2.8, { position: new Vec3(x, this.node.position.y, 0) }, { easing: 'sineInOut' })
             .call(() => this.changeBehavior('idle')).start();
     }
 
@@ -109,7 +109,7 @@ export class PetBehaviorController extends Component {
     private stretch() {
         const target = this.visualTarget();
         Tween.stopAllByTarget(target);
-        tween(target).to(0.35, { scale: new Vec3(0.67, 0.583, 1) }, { easing: 'quadOut' })
+        tween(target).to(0.35, { scale: new Vec3(1.08, 0.94, 1) }, { easing: 'quadOut' })
             .to(0.45, { scale: this.visualBaseScale }, { easing: 'backOut' })
             .call(() => this.playBreathing()).start();
     }
