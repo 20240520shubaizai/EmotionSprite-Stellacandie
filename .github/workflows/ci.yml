@@ -20,6 +20,10 @@ jobs:
           arch: win64_msvc2022_64
           modules: 'qtquick3d'
           cache: true
+      - name: Initialize MSVC toolchain
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
       - name: Install Python dependencies
         shell: pwsh
         run: |
