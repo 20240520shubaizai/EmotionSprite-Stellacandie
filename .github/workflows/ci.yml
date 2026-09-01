@@ -35,7 +35,7 @@ jobs:
         shell: pwsh
         run: |
           python tools/validate_personality_training.py
-          agent-core/.venv/Scripts/python -m json.tool agent-core/evaluation/golden_set_v1.json > $null
+          agent-core/.venv/Scripts/python -m json.tool agent-core/evaluation/golden_set_v2.json > $null
           agent-core/.venv/Scripts/python -m json.tool agent-core/evaluation/phase6_retrieval_set.json > $null
       - name: Audit source tree for release safety
         shell: pwsh
@@ -57,7 +57,7 @@ jobs:
           ctest --test-dir build/release --output-on-failure
       - name: Run deterministic release evaluation
         working-directory: agent-core
-        run: .venv/Scripts/python tools/phase8_evaluate.py --golden evaluation/golden_set_v1.json --retrieval evaluation/phase6_retrieval_set.json --output ../artifacts/phase8_evaluation.json
+        run: .venv/Scripts/python tools/phase8_evaluate.py --golden evaluation/golden_set_v2.json --retrieval evaluation/phase6_retrieval_set.json --output ../artifacts/phase8_evaluation.json
       - name: Build portable release
         shell: pwsh
         run: ./tools/package_release.ps1 -BuildDirectory ./build/release -OutputDirectory ./artifacts -Version 0.9.0-rc.1
