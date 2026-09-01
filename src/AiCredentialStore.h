@@ -11,4 +11,7 @@ public:
     static bool saveVisionApiKey(const QString &apiKey);
     static QString loadVisionApiKey();
     static bool clearVisionApiKey();
+    static bool saveSyncToken(const QString &token);
+    static QString loadSyncToken();
+    static bool clearSyncToken();
 };

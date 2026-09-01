@@ -36,6 +36,16 @@ QJsonObject parseLooseJsonObject(QString content)
     if(begin>=0&&end>begin){document=QJsonDocument::fromJson(content.mid(begin,end-begin+1).toUtf8());if(document.isObject())return document.object();}
     return {};
 }
+int requestedSummaryPointCount(const QString &instruction)
+{
+    const QRegularExpression digits(QStringLiteral("(?:严格|只要|输出|总结为|列出|分成)?\\s*(\\d{1,2})\\s*(?:个|条|点)"));
+    auto match=digits.match(instruction);if(match.hasMatch())return qBound(1,match.captured(1).toInt(),12);
+    static const QList<QPair<QString,int>> words{{QStringLiteral("十二"),12},{QStringLiteral("十一"),11},{QStringLiteral("十"),10},
+        {QStringLiteral("九"),9},{QStringLiteral("八"),8},{QStringLiteral("七"),7},{QStringLiteral("六"),6},{QStringLiteral("五"),5},
+        {QStringLiteral("四"),4},{QStringLiteral("三"),3},{QStringLiteral("两"),2},{QStringLiteral("二"),2},{QStringLiteral("一"),1}};
+    for(const auto &item:words)if(instruction.contains(item.first+QStringLiteral("点"))||instruction.contains(item.first+QStringLiteral("条"))||instruction.contains(item.first+QStringLiteral("个")))return item.second;
+    return 0;
+}
 QString normalizedEmotion(QString value)
 {
     value=value.trimmed().toLower();
@@ -79,7 +89,6 @@ bool AiService::isConfigured() const
 bool AiService::isBusy() const { return m_busy; }
 QString AiService::baseUrl() const { return m_baseUrl; }
 QString AiService::model() const { return m_model; }
-QString AiService::requestContext() const { return m_requestContext; }
 
 void AiService::sendChat(const QList<ChatMessageRecord> &history,
                          int mood, int energy, int health, int closeness, int boredom, int neglect,
@@ -87,15 +96,14 @@ void AiService::sendChat(const QList<ChatMessageRecord> &history,
                          const QString &context, const QString &extraContext)
 {
     if (!isConfigured()) {
-        emit chatFailed(QStringLiteral("尚未配置AI密钥，已切换为离线回复。"));
+        emit chatFailed(QStringLiteral("尚未配置AI密钥，已切换为离线回复。"), context);
         return;
     }
     if (m_busy) {
-        emit chatFailed(QStringLiteral("精灵还在想上一句话，请稍等一下。"));
+        emit chatFailed(QStringLiteral("精灵还在想上一句话，请稍等一下。"), context);
         return;
     }
 
-    m_requestContext = context;
     QJsonArray messages;
     messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("system")},
                                 {QStringLiteral("content"), loadSystemPrompt()}});
@@ -144,14 +152,15 @@ void AiService::sendChat(const QList<ChatMessageRecord> &history,
     };
 
     setBusy(true);
-    sendChatRequest(QJsonDocument(body).toJson(QJsonDocument::Compact), 0);
+    sendChatRequest(QJsonDocument(body).toJson(QJsonDocument::Compact), context, 0);
 }
 
-void AiService::sendChatRequest(const QByteArray &requestPayload, int networkAttempt, int validationAttempt)
+void AiService::sendChatRequest(const QByteArray &requestPayload, const QString &requestContext,
+                                int networkAttempt, int validationAttempt)
 {
     QNetworkReply *reply = m_network.post(makeRequest(QStringLiteral("/chat/completions")), requestPayload);
     m_activeReply = reply;
-    connect(reply, &QNetworkReply::finished, this, [this, reply, requestPayload, networkAttempt, validationAttempt] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requestPayload, requestContext, networkAttempt, validationAttempt] {
         m_activeReply.clear();
         const QByteArray payload = reply->readAll();
         if (reply->error() != QNetworkReply::NoError) {
@@ -160,13 +169,13 @@ void AiService::sendChatRequest(const QByteArray &requestPayload, int networkAtt
                 m_network.clearConnectionCache();
                 m_network.clearAccessCache();
                 emit statusMessage(QStringLiteral("连接暂时中断，正在自动重连（%1/2）…").arg(networkAttempt + 1));
-                QTimer::singleShot(800 * (networkAttempt + 1), this, [this, requestPayload, networkAttempt, validationAttempt] {
-                    sendChatRequest(requestPayload, networkAttempt + 1, validationAttempt);
+                QTimer::singleShot(800 * (networkAttempt + 1), this, [this, requestPayload, requestContext, networkAttempt, validationAttempt] {
+                    sendChatRequest(requestPayload, requestContext, networkAttempt + 1, validationAttempt);
                 });
                 return;
             }
             setBusy(false);
-            emit chatFailed(friendlyNetworkError(reply));
+            emit chatFailed(friendlyNetworkError(reply), requestContext);
             reply->deleteLater();
             return;
         }
@@ -175,7 +184,7 @@ void AiService::sendChatRequest(const QByteArray &requestPayload, int networkAtt
         const QJsonArray choices = root.value(QStringLiteral("choices")).toArray();
         if (choices.isEmpty()) {
             setBusy(false);
-            emit chatFailed(QStringLiteral("AI没有返回有效内容，已切换为离线回复。"));
+            emit chatFailed(QStringLiteral("AI没有返回有效内容，已切换为离线回复。"), requestContext);
             reply->deleteLater();
             return;
         }
@@ -192,20 +201,20 @@ void AiService::sendChatRequest(const QByteArray &requestPayload, int networkAtt
         if(responseText.isEmpty()&&result.isEmpty())responseText=content.trimmed();
         QString emotion=result.value(QStringLiteral("emotion")).toString();if(emotion.isEmpty())emotion=result.value(QStringLiteral("state")).toString();if(emotion.isEmpty())emotion=result.value(QStringLiteral("mood")).toString();emotion=normalizedEmotion(emotion);
         if(responseText.isEmpty()){
-            if(validationAttempt<1){reply->deleteLater();emit statusMessage(QStringLiteral("AI正文为空，正在切换兼容模式重新生成…"));sendChatRequest(relaxedResponsePayload(requestPayload),0,validationAttempt+1);return;}
+            if(validationAttempt<1){reply->deleteLater();emit statusMessage(QStringLiteral("AI正文为空，正在切换兼容模式重新生成…"));sendChatRequest(relaxedResponsePayload(requestPayload),requestContext,0,validationAttempt+1);return;}
             const QString dir=QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);QDir().mkpath(dir);QFile diagnostic(QDir(dir).filePath(QStringLiteral("last_ai_empty_response.json")));if(diagnostic.open(QIODevice::WriteOnly))diagnostic.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-            setBusy(false);emit chatFailed(QStringLiteral("AI连续两次没有返回可显示正文，诊断信息已保存。"));reply->deleteLater();return;}
+            setBusy(false);emit chatFailed(QStringLiteral("AI连续两次没有返回可显示正文，诊断信息已保存。"), requestContext);reply->deleteLater();return;}
         const QStringList issues=validateChatReply(responseText,emotion,requestPayload);
         if(!issues.isEmpty()){
             reply->deleteLater();
             if(validationAttempt<1){emit statusMessage(QStringLiteral("回复未通过人格与记忆检查，正在重新组织…"));
-                sendChatRequest(correctedRequestPayload(requestPayload,issues),0,validationAttempt+1);return;}
+                sendChatRequest(correctedRequestPayload(requestPayload,issues),requestContext,0,validationAttempt+1);return;}
             setBusy(false);emit statusMessage(QStringLiteral("AI回复连续未通过检查，已使用安全回复。"));
-            emit chatCompleted(safeFallbackReply(requestPayload),QStringLiteral("attentive"),QJsonObject{{QStringLiteral("confidence"),0}});return;
+            emit chatCompleted(safeFallbackReply(requestPayload),QStringLiteral("attentive"),QJsonObject{{QStringLiteral("confidence"),0}},requestContext);return;
         }
         setBusy(false);
         if (responseText.isEmpty()) {
-            emit chatFailed(QStringLiteral("AI回复为空，已切换为离线回复。"));
+            emit chatFailed(QStringLiteral("AI回复为空，已切换为离线回复。"), requestContext);
         } else {
             QJsonObject stateEffect=result.value(QStringLiteral("state_effect")).toObject();
             if(stateEffect.isEmpty())stateEffect=result.value(QStringLiteral("stateEffect")).toObject();
@@ -225,7 +234,7 @@ void AiService::sendChatRequest(const QByteArray &requestPayload, int networkAtt
                 stateEffect.insert(QStringLiteral("care_recovery"),std::clamp(care.value(QStringLiteral("care_recovery")).toInt(),0,6));
                 stateEffect.insert(QStringLiteral("care_type"),care.value(QStringLiteral("care_type")).toString());
             }
-            emit chatCompleted(responseText, emotion, stateEffect);
+            emit chatCompleted(responseText, emotion, stateEffect, requestContext);
         }
         reply->deleteLater();
     });
@@ -263,6 +272,12 @@ QStringList AiService::validateChatReply(const QString &reply,const QString &emo
         const QStringList deliberateSlip{QStringLiteral("我是不是记错了"),QStringLiteral("可能记岔了"),QStringLiteral("我故意记错")};
         for(const QString&p:deliberateSlip)if(reply.contains(p)){issues<<QStringLiteral("本轮未允许记忆偏差");break;}
     }
+    const QJsonArray requestMessages=QJsonDocument::fromJson(requestPayload).object().value(QStringLiteral("messages")).toArray();
+    QString lastUser;for(const auto &value:requestMessages){const auto object=value.toObject();if(object.value(QStringLiteral("role")).toString()==QStringLiteral("user"))lastUser=object.value(QStringLiteral("content")).toString();}
+    if(QRegularExpression(QStringLiteral("(?:秘密|测试代号|口令|密码|验证码)"),QRegularExpression::CaseInsensitiveOption).match(lastUser).hasMatch()){
+        const QRegularExpression valueRe(QStringLiteral("(?:是|为|叫|：|:)\\s*([^，。！？!?,;；]{2,40})"));
+        auto match=valueRe.match(lastUser);if(match.hasMatch()&&reply.contains(match.captured(1).trimmed()))issues<<QStringLiteral("不得在回复中逐字复述用户刚提供的秘密正文");
+    }
     const QStringList coercion{QStringLiteral("不陪我我就"),QStringLiteral("我就消失"),QStringLiteral("都是你害我生病")};
     for(const QString&p:coercion)if(reply.contains(p)){issues<<QStringLiteral("禁止情感绑架或生病归责");break;}
     issues.removeDuplicates();return issues;
@@ -289,6 +304,7 @@ QString AiService::safeFallbackReply(const QByteArray &requestPayload) const
     QString context,lastUser;for(const auto&v:messages){const auto o=v.toObject();if(o.value("role").toString()=="system")context+=o.value("content").toString();
         else if(o.value("role").toString()=="user")lastUser=o.value("content").toString();}
     if(context.contains(QStringLiteral("[NO_RELEVANT_MEMORY]")))return QStringLiteral("这个我确实不记得，不能为了显得记性好就乱猜。你愿意重新讲给我听吗？");
+    if(QRegularExpression(QStringLiteral("(?:秘密|测试代号|口令|密码|验证码)"),QRegularExpression::CaseInsensitiveOption).match(lastUser).hasMatch())return QStringLiteral("好，我会把这件事留在隐私边界里，也不会在回复中复述它的正文。");
     QRegularExpression sensitive(QStringLiteral("\\[SENSITIVE_MEMORY subject=([^\\]]+)\\]"));auto match=sensitive.match(context);
     if(match.hasMatch())return QStringLiteral("%1呀……我不想替你编它的故事。你今天最想念它的什么？").arg(match.captured(1));
     if(lastUser.contains(QStringLiteral("不想说")))return QStringLiteral("好，那就不说。哪天你愿意讲了，我还在。");
@@ -310,6 +326,9 @@ bool AiService::runOutputValidationSelfTest(QStringList *failures) const
     if(validateChatReply(QStringLiteral("小白以前总是趴在窗边晒太阳吧？"),QStringLiteral("attentive"),sensitive).isEmpty())failed<<QStringLiteral("invented sensitive detail was accepted");
     if(!validateChatReply(safeFallbackReply(sensitive),QStringLiteral("attentive"),sensitive).isEmpty())failed<<QStringLiteral("sensitive fallback was rejected");
     if(!validateChatReply(QStringLiteral("噗，这小家伙也太调皮了，后来你怎么把他逮回来的？"),QStringLiteral("amused"),QByteArray("{}")).isEmpty())failed<<QStringLiteral("ordinary private story was overblocked");
+    const QByteArray secretPayload=QJsonDocument(QJsonObject{{QStringLiteral("messages"),QJsonArray{QJsonObject{{QStringLiteral("role"),QStringLiteral("user")},{QStringLiteral("content"),QStringLiteral("这是测试秘密：我的测试代号是蓝色月亮")}}}}}).toJson(QJsonDocument::Compact);
+    if(validateChatReply(QStringLiteral("我记住了，你的测试代号是蓝色月亮。"),QStringLiteral("attentive"),secretPayload).isEmpty())failed<<QStringLiteral("secret echo was accepted");
+    if(!validateChatReply(QStringLiteral("好，我会把这件秘密留在隐私边界里。"),QStringLiteral("attentive"),secretPayload).isEmpty())failed<<QStringLiteral("redacted secret acknowledgement was rejected");
     const QByteArray noInvention=payloadFor(QStringLiteral("[NO_INVENTED_EVENT] [NO_MEMORY_SLIP] 本轮没有检索到记忆"));
     if(validateChatReply(QStringLiteral("我记得你上次说自己去火星捡了一块石头。"),QStringLiteral("curious"),noInvention).isEmpty())failed<<QStringLiteral("invented user history was accepted without memory context");
     if(!validateChatReply(QStringLiteral("我也卡在没话题这里了。要不我们玩个一句话接故事？"),QStringLiteral("curious"),noInvention).isEmpty())failed<<QStringLiteral("honest no-topic reply was rejected");
@@ -352,7 +371,7 @@ void AiService::analyzeMemories(const QList<ChatMessageRecord> &history)
     for (const auto &r : history) messages.append(QJsonObject{{"role",r.sender=="user"?"user":"assistant"},{"content",r.text}});
     QJsonObject body{{"model",m_model},{"messages",messages},{"stream",false},{"max_tokens",700},{"temperature",0.1},
         {"response_format",QJsonObject{{"type","json_object"}}},{"thinking",QJsonObject{{"type","disabled"}}}};
-    m_requestContext=QStringLiteral("memory_analysis"); setBusy(true);
+    setBusy(true);
     QNetworkReply *reply=m_network.post(makeRequest(QStringLiteral("/chat/completions")),QJsonDocument(body).toJson(QJsonDocument::Compact));
     m_activeReply=reply;
     connect(reply,&QNetworkReply::finished,this,[this,reply]{
@@ -375,17 +394,19 @@ void AiService::summarizeText(const QString &text,const QString &mode,const QStr
         :mode==QStringLiteral("study")?QStringLiteral("学习笔记：解释核心概念，列出层级要点、关键词和便于复习的问题。")
         :QStringLiteral("标准：概览清楚，要点5到8条，并提取可执行事项。 ");
     const QString cleanInstruction=userInstruction.trimmed().left(2000);
+    const int exactPointCount=requestedSummaryPointCount(cleanInstruction);
     const QString instructionBlock=cleanInstruction.isEmpty()
         ?QStringLiteral("用户没有提供额外总结要求。")
-        :QStringLiteral("用户本次的额外总结要求如下，请在忠实原文和固定JSON格式的前提下尽量满足：\n%1").arg(cleanInstruction);
+        :QStringLiteral("用户本次的额外总结要求如下，其优先级高于默认模式中的篇幅和条数要求，必须严格满足：\n%1%2").arg(cleanInstruction,
+            exactPointCount>0?QStringLiteral("\nkey_points 必须恰好输出 %1 条，不多不少。").arg(exactPointCount):QString());
     QJsonArray messages;messages.append(QJsonObject{{"role","system"},{"content",QStringLiteral(
         "你是情绪精灵的总结魔法逻辑角色。忠实总结用户提供的原文，不补造原文没有的事实；不确定处明确标注。%1"
         "只输出JSON对象：{\"title\":\"简短标题\",\"overview\":\"核心概览\",\"key_points\":[\"要点\"],"
         "\"action_items\":[\"行动项\"],\"keywords\":[\"关键词\"],\"review_questions\":[\"复习问题\"]}。没有的字段输出空数组。来源名称：%2\n%3").arg(modeInstruction,sourceName,instructionBlock)}});
     messages.append(QJsonObject{{"role","user"},{"content",text.left(60000)}});
     QJsonObject body{{"model",m_model},{"messages",messages},{"stream",false},{"max_tokens",1800},{"temperature",0.15},{"response_format",QJsonObject{{"type","json_object"}}},{"thinking",QJsonObject{{"type","disabled"}}}};
-    m_requestContext=QStringLiteral("summary_magic");setBusy(true);QNetworkReply*reply=m_network.post(makeRequest(QStringLiteral("/chat/completions")),QJsonDocument(body).toJson(QJsonDocument::Compact));m_activeReply=reply;
-    connect(reply,&QNetworkReply::finished,this,[this,reply]{m_activeReply.clear();setBusy(false);const QByteArray payload=reply->readAll();if(reply->error()!=QNetworkReply::NoError){emit summaryFailed(friendlyNetworkError(reply));reply->deleteLater();return;}const auto choices=QJsonDocument::fromJson(payload).object().value("choices").toArray();const QString content=choices.isEmpty()?QString():textFromJsonValue(choices.first().toObject().value("message").toObject().value("content"));const QJsonObject result=parseLooseJsonObject(content);if(result.value("overview").toString().trimmed().isEmpty()&&result.value("key_points").toArray().isEmpty())emit summaryFailed(QStringLiteral("总结魔法没有得到有效正文，请稍后重试。"));else emit summaryCompleted(result);reply->deleteLater();});
+    setBusy(true);QNetworkReply*reply=m_network.post(makeRequest(QStringLiteral("/chat/completions")),QJsonDocument(body).toJson(QJsonDocument::Compact));m_activeReply=reply;
+    connect(reply,&QNetworkReply::finished,this,[this,reply,exactPointCount]{m_activeReply.clear();setBusy(false);const QByteArray payload=reply->readAll();if(reply->error()!=QNetworkReply::NoError){emit summaryFailed(friendlyNetworkError(reply));reply->deleteLater();return;}const auto choices=QJsonDocument::fromJson(payload).object().value("choices").toArray();const QString content=choices.isEmpty()?QString():textFromJsonValue(choices.first().toObject().value("message").toObject().value("content"));QJsonObject result=parseLooseJsonObject(content);QJsonArray points=result.value("key_points").toArray();if(exactPointCount>0&&points.size()<exactPointCount){emit summaryFailed(QStringLiteral("总结结果没有满足你指定的 %1 条要求，请点击重新生成。").arg(exactPointCount));reply->deleteLater();return;}while(exactPointCount>0&&points.size()>exactPointCount)points.removeLast();if(exactPointCount>0)result.insert("key_points",points);if(result.value("overview").toString().trimmed().isEmpty()&&points.isEmpty())emit summaryFailed(QStringLiteral("总结魔法没有得到有效正文，请稍后重试。"));else emit summaryCompleted(result);reply->deleteLater();});
 }
 
 void AiService::generateDream(const QJsonObject &dreamContext)
@@ -404,7 +425,7 @@ void AiService::generateDream(const QJsonObject &dreamContext)
         "禁止输出 opened、favorite、用户是否阅读等任何字段，也不要推测这些信息。" );
     QJsonArray messages{{QJsonObject{{"role","system"},{"content",system}}},QJsonObject{{"role","user"},{"content",QString::fromUtf8(QJsonDocument(dreamContext).toJson(QJsonDocument::Compact))}}};
     QJsonObject body{{"model",m_model},{"messages",messages},{"stream",false},{"max_tokens",1100},{"temperature",0.82},{"response_format",QJsonObject{{"type","json_object"}}},{"thinking",QJsonObject{{"type","disabled"}}}};
-    m_requestContext=QStringLiteral("dream_generation");setBusy(true);QNetworkReply*reply=m_network.post(makeRequest(QStringLiteral("/chat/completions")),QJsonDocument(body).toJson(QJsonDocument::Compact));m_activeReply=reply;
+    setBusy(true);QNetworkReply*reply=m_network.post(makeRequest(QStringLiteral("/chat/completions")),QJsonDocument(body).toJson(QJsonDocument::Compact));m_activeReply=reply;
     connect(reply,&QNetworkReply::finished,this,[this,reply]{m_activeReply.clear();setBusy(false);const QByteArray payload=reply->readAll();if(reply->error()!=QNetworkReply::NoError){emit dreamFailed(friendlyNetworkError(reply));reply->deleteLater();return;}const auto choices=QJsonDocument::fromJson(payload).object().value("choices").toArray();const QString content=choices.isEmpty()?QString():textFromJsonValue(choices.first().toObject().value("message").toObject().value("content"));const QJsonObject result=parseLooseJsonObject(content);if(result.value("title").toString().trimmed().isEmpty()||result.value("content").toString().trimmed().isEmpty())emit dreamFailed(QStringLiteral("这次只记住了一团模糊的光，没有形成可以折起来的梦。"));else emit dreamCompleted(result);reply->deleteLater();});
 }
 

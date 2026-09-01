@@ -2,7 +2,7 @@
 #include <QDateTime>
 #include <QSettings>
 
-DataCleanupModule::DataCleanupModule(DataRepository*r,QObject*p):FeatureModule(p),m_repository(r)
+DataCleanupModule::DataCleanupModule(MemoryRepository*r,QObject*p):FeatureModule(p),m_repository(r)
 {
     m_enabled=QSettings().value(QStringLiteral("modules/dataCleanupEnabled"),true).toBool();refresh();m_timer.setInterval(6*60*60*1000);connect(&m_timer,&QTimer::timeout,this,[this]{if(m_enabled)runMaintenance();});m_timer.start();QTimer::singleShot(12000,this,[this]{if(m_enabled)runMaintenance();});
 }

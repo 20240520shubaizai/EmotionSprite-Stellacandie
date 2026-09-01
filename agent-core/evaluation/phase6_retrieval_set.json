@@ -1,0 +1,27 @@
+{
+  "description": "从情绪精灵既有真实产品场景整理的固定小样本；不含秘密正文。",
+  "documents": [
+    {"record_id":"sleep","source_type":"user_memory","fact_type":"user_statement","subject":"换枕头","content":"用户准备换一个更合适的枕头，免得早上脖子酸。","importance":40,"confidence":0.95},
+    {"record_id":"cat","source_type":"user_memory","fact_type":"user_statement","subject":"胖橘猫","content":"用户很喜欢公园里胖胖的橘猫。","importance":65,"confidence":0.95},
+    {"record_id":"food","source_type":"user_memory","fact_type":"user_statement","subject":"抹茶蛋糕","content":"用户想尝尝那家店的抹茶蛋糕。","importance":50,"confidence":0.9},
+    {"record_id":"sport","source_type":"user_memory","fact_type":"user_statement","subject":"晨跑","content":"用户计划每周跑步三次。","importance":45,"confidence":0.9},
+    {"record_id":"work","source_type":"event","fact_type":"temporary_event","subject":"周会","content":"用户周二上午要开会讨论项目。","importance":20,"confidence":0.95,"status":"planned"},
+    {"record_id":"game","source_type":"user_memory","fact_type":"user_statement","subject":"王者荣耀","content":"用户最近在王者荣耀里练辅助。","importance":45,"confidence":0.9},
+    {"record_id":"birthday","source_type":"user_memory","fact_type":"confirmed_fact","subject":"生日","content":"用户的生日是十月十日。","importance":100,"confidence":1.0},
+    {"record_id":"friend","source_type":"user_memory","fact_type":"user_statement","subject":"小林","content":"小林是用户提到过的朋友，准备来一起吃饭。","importance":60,"confidence":0.9},
+    {"record_id":"diary","source_type":"shared_experience","fact_type":"shared_experience","subject":"橘猫日记","content":"精灵在日记里写下了用户分享的公园橘猫故事。","importance":30,"confidence":1.0,"proactive_allowed":false},
+    {"record_id":"dream","source_type":"shared_experience","fact_type":"shared_experience","subject":"蛋糕梦","content":"精灵梦见和用户一起寻找一块抹茶蛋糕。","importance":25,"confidence":1.0,"proactive_allowed":false},
+    {"record_id":"old-meeting","source_type":"event","fact_type":"temporary_event","subject":"旧会议","content":"用户曾经参加一次产品会议。","importance":80,"confidence":0.9,"status":"archived"},
+    {"record_id":"pillow-reminder","source_type":"reminder","fact_type":"temporary_event","subject":"换枕头提醒","content":"两天后提醒用户更换枕头。","importance":1,"confidence":1.0,"status":"pending","explicit_request":true}
+  ],
+  "queries": [
+    {"query":"最近有什么睡眠用品计划","expected":"sleep"},
+    {"query":"更偏爱哪种宠物","expected":"cat"},
+    {"query":"想吃什么甜点","expected":"food"},
+    {"query":"有什么锻炼安排","expected":"sport"},
+    {"query":"近期工作安排呢","expected":"work"},
+    {"query":"最近在玩什么游戏","expected":"game"},
+    {"query":"什么时候庆祝出生纪念日","expected":"birthday"},
+    {"query":"之前提到的伙伴是谁","expected":"friend"}
+  ]
+}

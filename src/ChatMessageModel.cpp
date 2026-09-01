@@ -1,6 +1,6 @@
 #include "ChatMessageModel.h"
 
-ChatMessageModel::ChatMessageModel(DataRepository *storage, QObject *parent)
+ChatMessageModel::ChatMessageModel(ConversationRepository *storage, QObject *parent)
     : QAbstractListModel(parent)
     , m_storage(storage)
 {
@@ -54,4 +54,9 @@ void ChatMessageModel::append(const QString &sender, const QString &text)
     beginInsertRows(QModelIndex(), row, row);
     m_messages.append(record);
     endInsertRows();
+}
+
+void ChatMessageModel::appendPersisted(const ChatMessageRecord &record)
+{
+    const int row=m_messages.size();beginInsertRows(QModelIndex(),row,row);m_messages.append(record);endInsertRows();
 }

@@ -10,8 +10,8 @@
 #include <QSettings>
 #include <QTime>
 
-DreamModule::DreamModule(DataRepository *storage, AiService *ai, QObject *parent)
-    : FeatureModule(parent), m_storage(storage), m_ai(ai)
+DreamModule::DreamModule(ConversationRepository *conversations,MemoryRepository *memories,PetStateRepository *petState,DreamRepository *storage,AiService *ai,QObject *parent)
+    : FeatureModule(parent),m_conversations(conversations),m_memories(memories),m_petState(petState),m_storage(storage),m_ai(ai)
 {
     m_enabled = QSettings().value(QStringLiteral("modules/dreamEnabled"), true).toBool();
     refresh();
@@ -51,14 +51,14 @@ DreamModule::DreamModule(DataRepository *storage, AiService *ai, QObject *parent
         m_status = error;
         emit changed();
     });
-    connect(ai, &AiService::chatCompleted, this, [this](const QString &reply, const QString &, const QJsonObject &) {
-        if (m_ai->requestContext() != QStringLiteral("dream_echo")) return;
+    connect(ai, &AiService::chatCompleted, this, [this](const QString &reply, const QString &, const QJsonObject &, const QString &requestContext) {
+        if (requestContext != QStringLiteral("dream_echo")) return;
         m_status = QStringLiteral("精灵已经看完你分享的内容。");
         emit echoResponseReady(reply);
         emit changed();
     });
-    connect(ai, &AiService::chatFailed, this, [this](const QString &error) {
-        if (m_ai->requestContext() != QStringLiteral("dream_echo")) return;
+    connect(ai, &AiService::chatFailed, this, [this](const QString &error, const QString &requestContext) {
+        if (requestContext != QStringLiteral("dream_echo")) return;
         m_status = QStringLiteral("分享已经保存，但精灵暂时没有组织好语言：%1").arg(error);
         emit changed();
     });
@@ -154,19 +154,19 @@ void DreamModule::startGeneration()
 QJsonObject DreamModule::buildContext() const
 {
     QJsonArray recent;
-    const auto messages = m_storage->loadRecentMessages(40);
+    const auto messages = m_conversations->loadRecentMessages(40);
     for (int i = qMax(0, messages.size() - 12); i < messages.size(); ++i) {
         const auto &message = messages.at(i);
         recent.append(QJsonObject{{"sender", message.sender}, {"text", message.text.left(500)}, {"time", message.createdAt.toString(Qt::ISODate)}});
     }
     QJsonArray memories;
     int count = 0;
-    for (const auto &memory : m_storage->loadMemories()) {
+    for (const auto &memory : m_memories->loadMemories()) {
         if (memory.memoryState != QStringLiteral("active") || memory.deletedAt.isValid()) continue;
         memories.append(QJsonObject{{"id", QString::number(memory.id)}, {"subject", memory.subject}, {"content", memory.content.left(300)}});
         if (++count >= 8) break;
     }
-    const auto state = m_storage->loadPetState();
+    const auto state = m_petState->loadPetState();
     return QJsonObject{{"date", QDate::currentDate().toString(Qt::ISODate)},
                        {"season_month", QDate::currentDate().month()},
                        {"selected_theme", DreamGenerationRole::chooseTheme()},
@@ -202,7 +202,7 @@ void DreamModule::submitRealityEcho(const QString &text)
     QList<ChatMessageRecord> history{{0, QStringLiteral("user"),
         QStringLiteral("用户主动分享了一段现实经历：%1\n把它当作普通聊天内容回应，先接住用户真正想分享的事情。禁止主动提及梦、星星纸、梦境相同或不同，也不能暗示你知道用户看过任何秘密内容。只围绕一个重点，自然回复50到100字，最多追问一个问题。").arg(text.trimmed().left(2000)),
         QDateTime::currentDateTime()}};
-    const auto state = m_storage->loadPetState();
+    const auto state = m_petState->loadPetState();
     m_ai->sendChat(history, state.mood, state.energy, state.health, state.closeness, state.boredom,
                    state.neglect, state.curiosity, state.irritation, QStringLiteral("dream_echo"), QString());
     m_status = QStringLiteral("现实回声已经悄悄送出……"); emit changed();
@@ -229,7 +229,7 @@ void DreamModule::submitVisualRealityEcho(const QJsonObject &vision, const QStri
     QList<ChatMessageRecord> history{{0, QStringLiteral("user"),
         QStringLiteral("视觉模块确认照片内容：%1\n用户补充：%2\n请像真正看到用户主动分享的照片一样自然回应。先回应照片中最值得注意的一个事实，再表达感受，最多追问一个细节。%3\n绝对禁止提及梦、星星纸、梦境里有什么、与梦是否相同，也不能罗列识图报告或编造画面外的物体。事实与想象必须用‘像、让我想到、感觉’区分。回复50到100字，只生成一段。")
             .arg(vision.value(QStringLiteral("description")).toString(), note.left(500), familiarity), QDateTime::currentDateTime()}};
-    const auto state = m_storage->loadPetState();
+    const auto state = m_petState->loadPetState();
     m_ai->sendChat(history, state.mood, state.energy, state.health, state.closeness, state.boredom,
                    state.neglect, state.curiosity, state.irritation, QStringLiteral("dream_echo"), QString());
     m_status = QStringLiteral("精灵正在认真看这张照片……"); emit changed();

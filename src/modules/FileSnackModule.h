@@ -1,14 +1,14 @@
 #pragma once
 
 #include "FeatureModule.h"
-#include "../data/DataRepository.h"
+#include "../data/repositories/CollectionRepository.h"
 #include <QUrl>
 
 class FileSnackModule final : public FeatureModule
 {
     Q_OBJECT
 public:
-    explicit FileSnackModule(DataRepository *storage, QObject *parent = nullptr);
+    explicit FileSnackModule(CollectionRepository *storage, QObject *parent = nullptr);
     QString id() const override;
     QString displayName() const override;
     bool isEnabled() const override;
@@ -54,7 +54,7 @@ private:
     QString reactionFor(const SnackCatalogRecord &record) const;
     void refreshData();
 
-    DataRepository *m_storage = nullptr;
+    CollectionRepository *m_storage = nullptr;
     bool m_enabled = true;
     QString m_sourcePath, m_fileName, m_fileInfo, m_modifiedText;
     QString m_snackType, m_snackName, m_snackEmoji, m_warningText, m_safetyLevel, m_refusalReason;

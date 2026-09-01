@@ -1,6 +1,6 @@
 #pragma once
 
-#include "data/DataRepository.h"
+#include "data/repositories/PetStateRepository.h"
 #include <QObject>
 #include <QJsonObject>
 
@@ -21,7 +21,7 @@ class PetStateEngine final : public QObject
     Q_PROPERTY(QString conditionName READ conditionName NOTIFY statsChanged)
     Q_PROPERTY(int recoveryProgress READ recoveryProgress NOTIFY statsChanged)
 public:
-    explicit PetStateEngine(DataRepository *storage,QObject *parent=nullptr);
+    explicit PetStateEngine(PetStateRepository *storage,QObject *parent=nullptr);
     int mood()const; int energy()const; int health()const; int closeness()const;
     int boredom()const; int neglect()const; int curiosity()const; int irritation()const;
     int fullness()const;
@@ -44,6 +44,6 @@ private:
     void updateHealthForElapsedTime(const QDateTime &now); void evaluateDailyIllness(const QDateTime &now);
     void setHealthPhase(const QString &phase,const QDateTime &now); void addRecovery(int amount);
     void updateHealthValue();
-    DataRepository *m_storage=nullptr; PetStateRecord m_state;
+    PetStateRepository *m_storage=nullptr; PetStateRecord m_state;
     int m_resolvedState=1,m_candidateState=1,m_candidateCount=0;
 };

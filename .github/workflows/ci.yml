@@ -1,0 +1,65 @@
+name: build-test-evaluate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: agent-core/requirements.lock
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          modules: 'qtquick3d'
+          cache: true
+      - name: Install Python dependencies
+        shell: pwsh
+        run: |
+          python -m venv agent-core/.venv
+          agent-core/.venv/Scripts/python -m pip install --upgrade pip
+          agent-core/.venv/Scripts/python -m pip install -r agent-core/requirements.lock pyinstaller==6.15.0
+          agent-core/.venv/Scripts/python -m pip check
+      - name: Validate schemas and Golden Set
+        shell: pwsh
+        run: |
+          python tools/validate_personality_training.py
+          agent-core/.venv/Scripts/python -m json.tool agent-core/evaluation/golden_set_v1.json > $null
+          agent-core/.venv/Scripts/python -m json.tool agent-core/evaluation/phase6_retrieval_set.json > $null
+      - name: Audit source tree for release safety
+        shell: pwsh
+        run: ./tools/release_source_audit.ps1
+      - name: Build packaged Agent Core
+        working-directory: agent-core
+        run: .venv/Scripts/python -m PyInstaller --noconfirm agent-core.spec
+      - name: Configure and build C++
+        shell: pwsh
+        run: |
+          cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/release
+      - name: Run all tests
+        shell: pwsh
+        run: |
+          Push-Location agent-core
+          .venv/Scripts/python -m pytest tests -q
+          Pop-Location
+          ctest --test-dir build/release --output-on-failure
+      - name: Run deterministic release evaluation
+        working-directory: agent-core
+        run: .venv/Scripts/python tools/phase8_evaluate.py --golden evaluation/golden_set_v1.json --retrieval evaluation/phase6_retrieval_set.json --output ../artifacts/phase8_evaluation.json
+      - name: Build portable release
+        shell: pwsh
+        run: ./tools/package_release.ps1 -BuildDirectory ./build/release -OutputDirectory ./artifacts -Version 0.9.0-rc.1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Stellacandie-Windows
+          path: |
+            artifacts/Stellacandie-*.zip
+            artifacts/phase8_evaluation.json

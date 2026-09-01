@@ -1,14 +1,24 @@
 #include "StorageService.h"
+#include "data/SchemaMigrator.h"
 
 #include <QDir>
+#include <QFileInfo>
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QCryptographicHash>
+#include <QJsonDocument>
 #include <QStandardPaths>
 #include <QUuid>
 
 StorageService::StorageService()
-    : m_connectionName(QStringLiteral("emotion-sprite-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)))
+    : StorageService(QString())
+{
+}
+
+StorageService::StorageService(const QString &databasePathOverride)
+    : m_connectionName(QStringLiteral("emotion-sprite-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces))),
+      m_databasePathOverride(databasePathOverride)
 {
 }
 
@@ -25,13 +35,16 @@ StorageService::~StorageService()
 
 bool StorageService::initialize()
 {
-    const QString dataDirectory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    const QString dataDirectory = m_databasePathOverride.isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+        : QFileInfo(m_databasePathOverride).absolutePath();
     if (!QDir().mkpath(dataDirectory)) {
         m_lastError = QStringLiteral("无法创建数据目录：%1").arg(dataDirectory);
         return false;
     }
 
-    m_databasePath = QDir(dataDirectory).filePath(QStringLiteral("emotion_sprite.db"));
+    m_databasePath = m_databasePathOverride.isEmpty()
+        ? QDir(dataDirectory).filePath(QStringLiteral("emotion_sprite.db")) : m_databasePathOverride;
     QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connectionName);
     database.setDatabaseName(m_databasePath);
     if (!database.open()) {
@@ -46,6 +59,11 @@ bool StorageService::initialize()
             return false;
         }
         pragma.finish();
+        if (!pragma.exec(QStringLiteral("PRAGMA busy_timeout = 5000"))) {
+            m_lastError = pragma.lastError().text();
+            return false;
+        }
+        pragma.finish();
         if (!pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"))) {
             m_lastError = pragma.lastError().text();
             return false;
@@ -55,7 +73,8 @@ bool StorageService::initialize()
         pragma.next();
         pragma.finish();
     }
-    return createSchema();
+    if (!createSchema()) return false;
+    return SchemaMigrator::migrate(database, &m_lastError);
 }
 
 QString StorageService::databasePath() const
@@ -66,6 +85,11 @@ QString StorageService::databasePath() const
 QString StorageService::lastError() const
 {
     return m_lastError;
+}
+
+int StorageService::schemaVersion() const
+{
+    return SchemaMigrator::currentVersion(QSqlDatabase::database(m_connectionName));
 }
 
 QList<ChatMessageRecord> StorageService::loadRecentMessages(int limit) const
@@ -110,6 +134,35 @@ ChatMessageRecord StorageService::addMessage(const QString &sender, const QStrin
         record.id = query.lastInsertId().toLongLong();
     }
     return record;
+}
+
+QJsonObject StorageService::commitAgentTurn(const QString &requestId,const QString &traceId,const QString &assistantText,
+                                            const QJsonArray &proposals,bool injectFailure)
+{
+    QSqlDatabase db=QSqlDatabase::database(m_connectionName);QJsonObject result{{"schema_version","mutation_commit_v1"}};
+    if(requestId.trimmed().isEmpty()||assistantText.trimmed().isEmpty()){result.insert("error","invalid_commit_input");return result;}
+    QSqlQuery prior(db);prior.prepare(QStringLiteral("SELECT result_json FROM agent_mutation_commits WHERE request_id=:id"));prior.bindValue(":id",requestId);
+    if(prior.exec()&&prior.next()){auto cached=QJsonDocument::fromJson(prior.value(0).toByteArray()).object();cached.insert("idempotent_replay",true);return cached;}
+    if(!db.transaction()){result.insert("error",db.lastError().text());return result;}
+    auto fail=[&](const QString&e){db.rollback();return QJsonObject{{"schema_version","mutation_commit_v1"},{"committed",false},{"error",e}};};
+    QSqlQuery message(db);message.prepare(QStringLiteral("INSERT INTO messages(conversation_id,sender,text,created_at,uuid,user_id,sync_status,privacy_level) VALUES(1,'pet',:text,:at,lower(hex(randomblob(16))),'local-single-user','pending','private')"));
+    message.bindValue(":text",assistantText);message.bindValue(":at",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));if(!message.exec())return fail(message.lastError().text());
+    const qint64 messageId=message.lastInsertId().toLongLong();QJsonArray ids;int step=0;
+    for(const auto &value:proposals){const QJsonObject proposal=value.toObject();const QString kind=proposal.value("kind").toString();const QJsonObject payload=proposal.value("payload").toObject();
+        if(proposal.value("permission").toString("local_write")!=QStringLiteral("local_write"))continue;
+        if(injectFailure&&++step==2)return fail(QStringLiteral("injected_second_step_failure"));
+        if(kind==QStringLiteral("reminder")){
+            const QDateTime due=QDateTime::fromString(payload.value("scheduled_at").toString(),Qt::ISODateWithMs);if(!due.isValid())return fail(QStringLiteral("invalid_reminder_time"));
+            QSqlQuery q(db);q.prepare(QStringLiteral("INSERT INTO reminders(uuid,reminder_type,scheduled_at,status,payload,created_at,updated_at,user_id,sync_status,privacy_level) VALUES(lower(hex(randomblob(16))),:type,:due,'pending',:payload,:now,:now,'local-single-user','pending','private')"));
+            q.bindValue(":type",payload.value("type").toString("agent.reminder"));q.bindValue(":due",due.toString(Qt::ISODateWithMs));q.bindValue(":payload",payload.value("subject").toString(payload.value("source_text").toString()));q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));if(!q.exec())return fail(q.lastError().text());ids.append(QJsonObject{{"kind",kind},{"id",q.lastInsertId().toLongLong()}});
+        }else if(kind==QStringLiteral("memory_candidate")){
+            const QString content=payload.value("content").toString().trimmed();if(content.isEmpty())return fail(QStringLiteral("empty_memory"));QSqlQuery q(db);q.prepare(QStringLiteral("INSERT INTO memories(uuid,category,subject,content,importance,confidence,created_at,updated_at,sync_status,memory_state,privacy_level,user_id) VALUES(lower(hex(randomblob(16))),'agent_explicit',:subject,:content,80,:confidence,:now,:now,'pending','active','private','local-single-user') ON CONFLICT(category,subject) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at,sync_revision=sync_revision+1"));q.bindValue(":subject",content.left(80));q.bindValue(":content",content);q.bindValue(":confidence",proposal.value("confidence").toDouble(.8));q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));if(!q.exec())return fail(q.lastError().text());ids.append(QJsonObject{{"kind",kind},{"id",q.lastInsertId().toLongLong()}});
+        }else if(kind==QStringLiteral("state_delta")){
+            QSqlQuery q(db);q.prepare(QStringLiteral("UPDATE pet_state SET energy=MAX(0,MIN(100,energy+:energy)),mood=MAX(0,MIN(100,mood+:mood)),updated_at=:now,sync_status='pending',sync_revision=sync_revision+1 WHERE id=1"));q.bindValue(":energy",payload.value("energy").toInt());q.bindValue(":mood",payload.value("valence").toInt());q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));if(!q.exec())return fail(q.lastError().text());ids.append(QJsonObject{{"kind",kind},{"id",1}});
+        }
+    }
+    result.insert("committed",true);result.insert("message_id",messageId);result.insert("record_ids",ids);result.insert("idempotent_replay",false);
+    const QByteArray proposalBytes=QJsonDocument(proposals).toJson(QJsonDocument::Compact);QSqlQuery receipt(db);receipt.prepare(QStringLiteral("INSERT INTO agent_mutation_commits(request_id,trace_id,proposal_hash,result_json,created_at) VALUES(:id,:trace,:hash,:result,:at)"));receipt.bindValue(":id",requestId);receipt.bindValue(":trace",traceId);receipt.bindValue(":hash",QString::fromLatin1(QCryptographicHash::hash(proposalBytes,QCryptographicHash::Sha256).toHex()));receipt.bindValue(":result",QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact)));receipt.bindValue(":at",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));if(!receipt.exec())return fail(receipt.lastError().text());if(!db.commit())return fail(db.lastError().text());return result;
 }
 
 bool StorageService::saveDiaryEntry(const QDate &date, const QString &content)
@@ -167,7 +220,7 @@ QList<DiaryStickerRecord> StorageService::loadDiaryStickers(const QDate &date) c
 
 QList<MemoryRecord> StorageService::loadMemories() const
 {
-    QList<MemoryRecord> result;QSqlQuery q(QSqlDatabase::database(m_connectionName));if(!q.exec(QStringLiteral("SELECT id,uuid,category,subject,content,importance,confidence,next_question,created_at,updated_at,last_used_at,use_count,sync_status FROM memories WHERE deleted_at IS NULL AND memory_state='active' ORDER BY importance DESC,updated_at DESC")))return result;while(q.next()){MemoryRecord m;m.id=q.value(0).toLongLong();m.uuid=q.value(1).toString();m.category=q.value(2).toString();m.subject=q.value(3).toString();m.content=q.value(4).toString();m.importance=q.value(5).toInt();m.confidence=q.value(6).toDouble();m.nextQuestion=q.value(7).toString();m.createdAt=QDateTime::fromString(q.value(8).toString(),Qt::ISODateWithMs);m.updatedAt=QDateTime::fromString(q.value(9).toString(),Qt::ISODateWithMs);m.lastUsedAt=QDateTime::fromString(q.value(10).toString(),Qt::ISODateWithMs);m.useCount=q.value(11).toInt();m.syncStatus=q.value(12).toString();result.append(m);}return result;
+    QList<MemoryRecord> result;QSqlQuery q(QSqlDatabase::database(m_connectionName));if(!q.exec(QStringLiteral("SELECT id,uuid,category,subject,content,importance,confidence,next_question,created_at,updated_at,last_used_at,use_count,sync_status,sync_revision,privacy_level FROM memories WHERE deleted_at IS NULL AND memory_state='active' ORDER BY importance DESC,updated_at DESC")))return result;while(q.next()){MemoryRecord m;m.id=q.value(0).toLongLong();m.uuid=q.value(1).toString();m.category=q.value(2).toString();m.subject=q.value(3).toString();m.content=q.value(4).toString();m.importance=q.value(5).toInt();m.confidence=q.value(6).toDouble();m.nextQuestion=q.value(7).toString();m.createdAt=QDateTime::fromString(q.value(8).toString(),Qt::ISODateWithMs);m.updatedAt=QDateTime::fromString(q.value(9).toString(),Qt::ISODateWithMs);m.lastUsedAt=QDateTime::fromString(q.value(10).toString(),Qt::ISODateWithMs);m.useCount=q.value(11).toInt();m.syncStatus=q.value(12).toString();m.syncRevision=q.value(13).toInt();m.privacyLevel=q.value(14).toString();result.append(m);}return result;
 }
 
 bool StorageService::upsertMemory(const MemoryRecord &m)
@@ -177,14 +230,14 @@ bool StorageService::upsertMemory(const MemoryRecord &m)
             || m.content.contains(blocked, Qt::CaseInsensitive))) return false;
     }
     QSqlQuery q(QSqlDatabase::database(m_connectionName));
-    q.prepare(QStringLiteral("INSERT INTO memories(uuid,category,subject,content,importance,confidence,next_question,created_at,updated_at,sync_status,memory_state,locked,expires_at,retention,governance_reason) "
-        "VALUES(lower(hex(randomblob(16))),:category,:subject,:content,:importance,:confidence,:question,:now,:now,'pending',:state,:locked,:expires,:retention,:reason) "
+    q.prepare(QStringLiteral("INSERT INTO memories(uuid,category,subject,content,importance,confidence,next_question,created_at,updated_at,sync_status,memory_state,locked,expires_at,retention,governance_reason,privacy_level) "
+        "VALUES(lower(hex(randomblob(16))),:category,:subject,:content,:importance,:confidence,:question,:now,:now,'pending',:state,:locked,:expires,:retention,:reason,:privacy) "
         "ON CONFLICT(category,subject) DO UPDATE SET content=excluded.content,importance=MAX(memories.importance,excluded.importance),"
         "confidence=excluded.confidence,next_question=excluded.next_question,updated_at=excluded.updated_at,deleted_at=NULL,memory_state='active',locked=MAX(memories.locked,excluded.locked),expires_at=excluded.expires_at,retention=excluded.retention,governance_reason=excluded.governance_reason,"
-        "sync_status='pending',sync_revision=sync_revision+1"));
+        "privacy_level=excluded.privacy_level,sync_status='pending',sync_revision=sync_revision+1"));
     q.bindValue(":category",m.category); q.bindValue(":subject",m.subject); q.bindValue(":content",m.content);
     q.bindValue(":importance",m.importance); q.bindValue(":confidence",m.confidence); q.bindValue(":question",m.nextQuestion);
-    q.bindValue(":state",m.memoryState);q.bindValue(":locked",m.locked?1:0);q.bindValue(":expires",m.expiresAt.isValid()?m.expiresAt.toString(Qt::ISODateWithMs):QVariant());q.bindValue(":retention",m.retention);q.bindValue(":reason",m.governanceReason);
+    q.bindValue(":state",m.memoryState);q.bindValue(":locked",m.locked?1:0);q.bindValue(":expires",m.expiresAt.isValid()?m.expiresAt.toString(Qt::ISODateWithMs):QVariant());q.bindValue(":retention",m.retention);q.bindValue(":reason",m.governanceReason);q.bindValue(":privacy",m.privacyLevel);
     q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs)); return q.exec();
 }
 
@@ -198,13 +251,13 @@ bool StorageService::touchMemory(qint64 id)
 bool StorageService::softDeleteMemory(qint64 id)
 {
     QSqlQuery q(QSqlDatabase::database(m_connectionName));
-    q.prepare(QStringLiteral("UPDATE memories SET deleted_at=:now,sync_status='pending',sync_revision=sync_revision+1 WHERE id=:id"));
-    q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));q.bindValue(":id",id);return q.exec();
+    q.prepare(QStringLiteral("UPDATE memories SET deleted_at=:now,memory_state='deleted',updated_at=:now,sync_status='pending',sync_revision=sync_revision+1 WHERE id=:id AND deleted_at IS NULL"));
+    q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));q.bindValue(":id",id);return q.exec()&&q.numRowsAffected()==1;
 }
 
 QList<MemoryRecord> StorageService::loadManagedMemories(bool includeDeleted)const
 {
-    QList<MemoryRecord> result;QSqlQuery q(QSqlDatabase::database(m_connectionName));QString sql=QStringLiteral("SELECT id,uuid,category,subject,content,importance,confidence,next_question,created_at,updated_at,last_used_at,use_count,sync_status,memory_state,locked,expires_at,archived_at,deleted_at,retention,governance_reason FROM memories");if(!includeDeleted)sql+=QStringLiteral(" WHERE deleted_at IS NULL");sql+=QStringLiteral(" ORDER BY locked DESC,importance DESC,updated_at DESC");if(!q.exec(sql))return result;while(q.next()){MemoryRecord m;m.id=q.value(0).toLongLong();m.uuid=q.value(1).toString();m.category=q.value(2).toString();m.subject=q.value(3).toString();m.content=q.value(4).toString();m.importance=q.value(5).toInt();m.confidence=q.value(6).toDouble();m.nextQuestion=q.value(7).toString();m.createdAt=QDateTime::fromString(q.value(8).toString(),Qt::ISODateWithMs);m.updatedAt=QDateTime::fromString(q.value(9).toString(),Qt::ISODateWithMs);m.lastUsedAt=QDateTime::fromString(q.value(10).toString(),Qt::ISODateWithMs);m.useCount=q.value(11).toInt();m.syncStatus=q.value(12).toString();m.memoryState=q.value(13).toString();m.locked=q.value(14).toBool();m.expiresAt=QDateTime::fromString(q.value(15).toString(),Qt::ISODateWithMs);m.archivedAt=QDateTime::fromString(q.value(16).toString(),Qt::ISODateWithMs);m.deletedAt=QDateTime::fromString(q.value(17).toString(),Qt::ISODateWithMs);m.retention=q.value(18).toString();m.governanceReason=q.value(19).toString();result.append(m);}return result;
+    QList<MemoryRecord> result;QSqlQuery q(QSqlDatabase::database(m_connectionName));QString sql=QStringLiteral("SELECT id,uuid,category,subject,content,importance,confidence,next_question,created_at,updated_at,last_used_at,use_count,sync_status,memory_state,locked,expires_at,archived_at,deleted_at,retention,governance_reason,sync_revision,privacy_level FROM memories");if(!includeDeleted)sql+=QStringLiteral(" WHERE deleted_at IS NULL");sql+=QStringLiteral(" ORDER BY locked DESC,importance DESC,updated_at DESC");if(!q.exec(sql))return result;while(q.next()){MemoryRecord m;m.id=q.value(0).toLongLong();m.uuid=q.value(1).toString();m.category=q.value(2).toString();m.subject=q.value(3).toString();m.content=q.value(4).toString();m.importance=q.value(5).toInt();m.confidence=q.value(6).toDouble();m.nextQuestion=q.value(7).toString();m.createdAt=QDateTime::fromString(q.value(8).toString(),Qt::ISODateWithMs);m.updatedAt=QDateTime::fromString(q.value(9).toString(),Qt::ISODateWithMs);m.lastUsedAt=QDateTime::fromString(q.value(10).toString(),Qt::ISODateWithMs);m.useCount=q.value(11).toInt();m.syncStatus=q.value(12).toString();m.memoryState=q.value(13).toString();m.locked=q.value(14).toBool();m.expiresAt=QDateTime::fromString(q.value(15).toString(),Qt::ISODateWithMs);m.archivedAt=QDateTime::fromString(q.value(16).toString(),Qt::ISODateWithMs);m.deletedAt=QDateTime::fromString(q.value(17).toString(),Qt::ISODateWithMs);m.retention=q.value(18).toString();m.governanceReason=q.value(19).toString();m.syncRevision=q.value(20).toInt();m.privacyLevel=q.value(21).toString();result.append(m);}return result;
 }
 bool StorageService::updateMemoryGovernance(qint64 id,const QString&state,bool locked,const QDateTime&expiresAt){QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral("UPDATE memories SET memory_state=:state,locked=:locked,expires_at=:expires,archived_at=CASE WHEN :state='archived' THEN :now ELSE archived_at END,updated_at=:now,sync_status='pending',sync_revision=sync_revision+1 WHERE id=:id AND deleted_at IS NULL"));q.bindValue(":state",state);q.bindValue(":locked",locked?1:0);q.bindValue(":expires",expiresAt.isValid()?expiresAt.toString(Qt::ISODateWithMs):QVariant());q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));q.bindValue(":id",id);return q.exec()&&q.numRowsAffected()==1;}
 bool StorageService::restoreMemory(qint64 id){QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral("UPDATE memories SET deleted_at=NULL,memory_state='active',updated_at=:now,sync_status='pending',sync_revision=sync_revision+1 WHERE id=:id"));q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));q.bindValue(":id",id);return q.exec()&&q.numRowsAffected()==1;}
@@ -226,11 +279,11 @@ int StorageService::forgetTopic(const QString &topic)
     q.prepare(QStringLiteral("INSERT INTO forgotten_topics(topic,created_at,sync_status) VALUES(:topic,:now,'pending') "
         "ON CONFLICT(topic) DO UPDATE SET created_at=excluded.created_at,sync_status='pending'"));q.bindValue(":topic",key);q.bindValue(":now",now);
     if(!q.exec()){db.rollback();return 0;}
-    q.prepare(QStringLiteral("UPDATE memories SET deleted_at=:now,sync_status='pending',sync_revision=sync_revision+1 "
+    q.prepare(QStringLiteral("UPDATE memories SET deleted_at=:now,memory_state='deleted',updated_at=:now,sync_status='pending',sync_revision=sync_revision+1 "
         "WHERE deleted_at IS NULL AND (subject LIKE :pattern OR content LIKE :pattern)"));q.bindValue(":now",now);q.bindValue(":pattern",QStringLiteral("%%1%").arg(key));
     if(!q.exec()){db.rollback();return 0;}const int count=q.numRowsAffected();
     q.prepare(QStringLiteral("UPDATE story_threads SET status='forgotten',updated_at=:now WHERE topic LIKE :pattern OR summary LIKE :pattern"));q.bindValue(":now",now);q.bindValue(":pattern",QStringLiteral("%%1%").arg(key));if(!q.exec()){db.rollback();return 0;}
-    q.prepare(QStringLiteral("UPDATE reminders SET status='cancelled' WHERE payload LIKE :pattern"));q.bindValue(":pattern",QStringLiteral("%%1%").arg(key));if(!q.exec()){db.rollback();return 0;}
+    q.prepare(QStringLiteral("UPDATE reminders SET status='cancelled',updated_at=datetime('now'),sync_revision=sync_revision+1,sync_status='pending' WHERE payload LIKE :pattern"));q.bindValue(":pattern",QStringLiteral("%%1%").arg(key));if(!q.exec()){db.rollback();return 0;}
     q.prepare(QStringLiteral("UPDATE memory_entities SET deleted_at=:now,sync_status='pending',sync_revision=sync_revision+1 "
         "WHERE deleted_at IS NULL AND name LIKE :pattern"));q.bindValue(":now",now);q.bindValue(":pattern",QStringLiteral("%%1%").arg(key));if(!q.exec()){db.rollback();return 0;}
     q.prepare(QStringLiteral("DELETE FROM memory_relations WHERE memory_id IN (SELECT id FROM memories WHERE deleted_at IS NOT NULL) "
@@ -269,8 +322,8 @@ QStringList StorageService::entityNames() const
 qint64 StorageService::addReminder(const QString &type,const QDateTime &scheduledAt,const QString &payload)
 {
     QSqlQuery q(QSqlDatabase::database(m_connectionName));
-    q.prepare(QStringLiteral("INSERT INTO reminders(reminder_type,scheduled_at,status,payload,created_at,updated_at) "
-        "VALUES(:type,:at,'pending',:payload,:now,:now)"));
+    q.prepare(QStringLiteral("INSERT INTO reminders(uuid,reminder_type,scheduled_at,status,payload,created_at,updated_at) "
+        "VALUES(lower(hex(randomblob(16))),:type,:at,'pending',:payload,:now,:now)"));
     const QString now=QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
     q.bindValue(":type",type);q.bindValue(":at",scheduledAt.toString(Qt::ISODateWithMs));q.bindValue(":payload",payload);q.bindValue(":now",now);
     return q.exec()?q.lastInsertId().toLongLong():0;
@@ -289,11 +342,11 @@ QList<ReminderRecord> StorageService::loadDueReminders(const QDateTime &now,int 
 bool StorageService::updateReminderStatus(qint64 id,const QString &status)
 {
     QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral(
-        "UPDATE reminders SET status=:status,delivered_at=CASE WHEN :status='delivered' THEN :now ELSE delivered_at END,updated_at=:now WHERE id=:id"));
+        "UPDATE reminders SET status=:status,delivered_at=CASE WHEN :status='delivered' THEN :now ELSE delivered_at END,updated_at=:now,sync_revision=sync_revision+1,sync_status='pending' WHERE id=:id"));
     q.bindValue(":status",status);q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));q.bindValue(":id",id);return q.exec();
 }
 int StorageService::cancelReminders(const QString&typePrefix,const QString&payloadContains){QSqlQuery q(QSqlDatabase::database(m_connectionName));QString sql=QStringLiteral(
-    "UPDATE reminders SET status='cancelled',updated_at=:now WHERE status='pending' AND reminder_type LIKE :type");if(!payloadContains.isEmpty())sql+=QStringLiteral(" AND payload LIKE :payload");q.prepare(sql);
+    "UPDATE reminders SET status='cancelled',updated_at=:now,sync_revision=sync_revision+1,sync_status='pending' WHERE status='pending' AND reminder_type LIKE :type");if(!payloadContains.isEmpty())sql+=QStringLiteral(" AND payload LIKE :payload");q.prepare(sql);
     q.bindValue(":now",QDateTime::currentDateTime().toString(Qt::ISODateWithMs));q.bindValue(":type",typePrefix+QStringLiteral("%"));if(!payloadContains.isEmpty())q.bindValue(":payload",QStringLiteral("%%1%").arg(payloadContains));return q.exec()?q.numRowsAffected():0;}
 
 int StorageService::deliveredReminderCount(const QDate &date,const QString &typePrefix) const
@@ -330,6 +383,26 @@ qint64 StorageService::addCognitiveRecord(const CognitiveRecord &r)
     return q.exec()?q.lastInsertId().toLongLong():0;
 }
 
+qint64 StorageService::addCognitiveReminderAtomic(const CognitiveRecord &record,
+                                                   const QString &reminderType,
+                                                   const QDateTime &scheduledAt,
+                                                   const QString &payload)
+{
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    if (!db.transaction()) return 0;
+    const qint64 cognitiveId = addCognitiveRecord(record);
+    if (cognitiveId <= 0) { db.rollback(); return 0; }
+    if (reminderType.trimmed().isEmpty() || !scheduledAt.isValid()) { db.rollback(); return 0; }
+    const qint64 reminderId = addReminder(reminderType, scheduledAt, payload);
+    if (reminderId <= 0
+        || !updateCognitiveRecord(cognitiveId, record.status, scheduledAt, record.followUpAt,
+                                  record.followUpCount, reminderId)) {
+        db.rollback(); return 0;
+    }
+    if (!db.commit()) { db.rollback(); return 0; }
+    return cognitiveId;
+}
+
 QList<CognitiveRecord> StorageService::loadCognitiveRecords(const QStringList &statuses) const
 {
     QList<CognitiveRecord> out;QSqlQuery q(QSqlDatabase::database(m_connectionName));
@@ -349,7 +422,7 @@ QList<CognitiveRecord> StorageService::loadDueCognitiveFollowUps(const QDateTime
 {
     QList<CognitiveRecord> all=loadCognitiveRecords({QStringLiteral("awaiting_followup")}),out;for(const auto&r:all)if(r.followUpAt.isValid()&&r.followUpAt<=now&&r.followUpCount<r.maxFollowUps){out<<r;if(out.size()>=limit)break;}return out;
 }
-int StorageService::archiveExpiredCognitiveRecords(const QDateTime &now){QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral("UPDATE cognitive_records SET status='archived',updated_at=:now,sync_status='pending',sync_revision=sync_revision+1 WHERE status NOT IN ('archived','completed','cancelled') AND expires_at IS NOT NULL AND expires_at<:now"));q.bindValue(":now",now.toString(Qt::ISODateWithMs));if(!q.exec())return 0;const int changed=q.numRowsAffected();QSqlQuery cleanup(QSqlDatabase::database(m_connectionName));cleanup.exec(QStringLiteral("UPDATE reminders SET status='expired',updated_at=datetime('now') WHERE status='pending' AND id IN (SELECT reminder_id FROM cognitive_records WHERE status='archived' AND reminder_id IS NOT NULL)"));return changed;}
+int StorageService::archiveExpiredCognitiveRecords(const QDateTime &now){QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral("UPDATE cognitive_records SET status='archived',updated_at=:now,sync_status='pending',sync_revision=sync_revision+1 WHERE status NOT IN ('archived','completed','cancelled') AND expires_at IS NOT NULL AND expires_at<:now"));q.bindValue(":now",now.toString(Qt::ISODateWithMs));if(!q.exec())return 0;const int changed=q.numRowsAffected();QSqlQuery cleanup(QSqlDatabase::database(m_connectionName));cleanup.exec(QStringLiteral("UPDATE reminders SET status='expired',updated_at=datetime('now'),sync_revision=sync_revision+1,sync_status='pending' WHERE status='pending' AND id IN (SELECT reminder_id FROM cognitive_records WHERE status='archived' AND reminder_id IS NOT NULL)"));return changed;}
 int StorageService::removeTimeBoundMemories(){QSqlQuery q(QSqlDatabase::database(m_connectionName));return q.exec(QStringLiteral("UPDATE memories SET memory_state='archived',archived_at=datetime('now'),governance_reason='migrated_time_bound_event',sync_status='pending',sync_revision=sync_revision+1 WHERE deleted_at IS NULL AND memory_state='active' AND category='event' AND (content LIKE '%开会%' OR content LIKE '%提醒%' OR content LIKE '%明天%' OR content LIKE '%后天%' OR content LIKE '%几点%')"))?q.numRowsAffected():0;}
 
 bool StorageService::addSnackToInventory(const QString&type,const QString&name,const QString&emoji,int nutrition){QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral(
@@ -421,7 +494,7 @@ bool StorageService::savePetState(const PetStateRecord &state)
 {
     QSqlQuery query(QSqlDatabase::database(m_connectionName));
     query.prepare(QStringLiteral(
-        "UPDATE pet_state SET mood=:mood, energy=:energy, health=:health, closeness=:closeness, "
+        "UPDATE pet_state SET mood=:mood, energy=:energy, health=:health, closeness=:closeness, sync_revision=sync_revision+1,sync_status='pending', "
         "boredom=:boredom, neglect=:neglect, curiosity=:curiosity, irritation=:irritation, last_interaction=:last_interaction, "
         "last_illness=:last_illness, health_phase=:health_phase, condition=:condition, recovery_progress=:recovery_progress, "
         "illness_started_at=:illness_started_at, phase_changed_at=:phase_changed_at, last_illness_check_date=:last_illness_check_date, fullness=:fullness, last_digestion_at=:last_digestion_at, "
@@ -447,6 +520,18 @@ bool StorageService::savePetState(const PetStateRecord &state)
     query.bindValue(QStringLiteral(":updated_at"), QDateTime::currentDateTime().toString(Qt::ISODateWithMs));
     return query.exec();
 }
+
+bool StorageService::setSyncEnabled(const QString&type,bool enabled){static const QStringList allowed{QStringLiteral("settings"),QStringLiteral("pet_state"),QStringLiteral("memory"),QStringLiteral("reminder")};if(!allowed.contains(type))return false;QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral("INSERT INTO sync_preferences(entity_type,enabled,updated_at) VALUES(:type,:enabled,:now) ON CONFLICT(entity_type) DO UPDATE SET enabled=excluded.enabled,updated_at=excluded.updated_at"));q.bindValue(":type",type);q.bindValue(":enabled",enabled?1:0);q.bindValue(":now",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));return q.exec();}
+bool StorageService::syncEnabled(const QString&type)const{QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral("SELECT enabled FROM sync_preferences WHERE entity_type=:type"));q.bindValue(":type",type);return q.exec()&&q.next()&&q.value(0).toBool();}
+bool StorageService::setSyncMasterEnabled(bool enabled){QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral("UPDATE sync_runtime SET master_enabled=:enabled,updated_at=:now WHERE id=1"));q.bindValue(":enabled",enabled?1:0);q.bindValue(":now",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));return q.exec()&&q.numRowsAffected()==1;}
+bool StorageService::syncMasterEnabled()const{QSqlQuery q(QSqlDatabase::database(m_connectionName));return q.exec(QStringLiteral("SELECT master_enabled FROM sync_runtime WHERE id=1"))&&q.next()&&q.value(0).toBool();}
+QString StorageService::syncDeviceId()const{QSqlQuery q(QSqlDatabase::database(m_connectionName));return q.exec(QStringLiteral("SELECT device_id FROM sync_runtime WHERE id=1"))&&q.next()?q.value(0).toString():QString();}
+QJsonObject StorageService::syncStatus()const{QJsonObject out{{QStringLiteral("master_enabled"),syncMasterEnabled()},{QStringLiteral("device_id"),syncDeviceId()}};QSqlQuery q(QSqlDatabase::database(m_connectionName));if(q.exec(QStringLiteral("SELECT SUM(CASE WHEN status IN ('pending','retry') THEN 1 ELSE 0 END),COALESCE(MAX(CASE WHEN status='retry' THEN last_error_code END),''),(SELECT COALESCE(last_success_at,'') FROM sync_runtime WHERE id=1) FROM sync_outbox"))&&q.next()){out.insert(QStringLiteral("pending_count"),q.value(0).toInt());out.insert(QStringLiteral("last_error"),q.value(1).toString());out.insert(QStringLiteral("last_success_at"),q.value(2).toString());}return out;}
+bool StorageService::setSyncSetting(const QString&key,const QString&value){if(key.isEmpty()||key.size()>128||key.contains(QStringLiteral("secret"),Qt::CaseInsensitive)||key.contains(QStringLiteral("token"),Qt::CaseInsensitive)||key.contains(QStringLiteral("key"),Qt::CaseInsensitive)||key.contains(QStringLiteral("path"),Qt::CaseInsensitive))return false;QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral("INSERT INTO sync_settings(setting_key,setting_value,updated_at) VALUES(:key,:value,:now) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value,sync_revision=sync_settings.sync_revision+1,sync_status='pending',updated_at=excluded.updated_at"));q.bindValue(":key",key);q.bindValue(":value",value);q.bindValue(":now",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));return q.exec();}
+bool StorageService::setEntitySyncPrivacy(const QString&type,const QString&uuid,const QString&privacy){if(!QStringList{QStringLiteral("normal"),QStringLiteral("private"),QStringLiteral("secret"),QStringLiteral("local_only")}.contains(privacy)||type!=QStringLiteral("memory"))return false;QSqlDatabase db=QSqlDatabase::database(m_connectionName);if(!db.transaction())return false;QSqlQuery q(db);q.prepare(QStringLiteral("UPDATE memories SET privacy_level=:privacy,sync_revision=sync_revision+1,sync_status='pending' WHERE uuid=:uuid"));q.bindValue(":privacy",privacy);q.bindValue(":uuid",uuid);if(!(q.exec()&&q.numRowsAffected()==1)){db.rollback();return false;}if(privacy==QStringLiteral("secret")||privacy==QStringLiteral("local_only")){QSqlQuery block(db);block.prepare(QStringLiteral("UPDATE sync_outbox SET status='blocked',last_error_code='privacy_forbidden' WHERE entity_type='memory' AND entity_uuid=:uuid AND status IN ('pending','retry')"));block.bindValue(":uuid",uuid);if(!block.exec()){db.rollback();return false;}QSqlQuery erase(db);erase.prepare(QStringLiteral("INSERT OR IGNORE INTO sync_outbox(idempotency_key,user_id,entity_type,entity_uuid,operation,revision,privacy_level,payload,created_at) SELECT uuid||':'||sync_revision||':privacy-delete',user_id,'memory',uuid,'delete',sync_revision,'normal','{}',datetime('now') FROM memories WHERE uuid=:uuid"));erase.bindValue(":uuid",uuid);if(!erase.exec()){db.rollback();return false;}}return db.commit();}
+QList<SyncOutboxRecord> StorageService::loadPendingOutbox(int limit)const{QList<SyncOutboxRecord>out;if(!syncMasterEnabled())return out;QSqlQuery q(QSqlDatabase::database(m_connectionName));q.prepare(QStringLiteral("SELECT o.id,o.idempotency_key,o.user_id,o.entity_type,o.entity_uuid,o.operation,o.revision,o.privacy_level,o.payload,o.created_at,o.retry_count,o.next_attempt_at FROM sync_outbox o JOIN sync_preferences p ON p.entity_type=o.entity_type AND p.enabled=1 WHERE o.status IN ('pending','retry') AND o.privacy_level NOT IN ('secret','local_only') AND (o.next_attempt_at IS NULL OR datetime(o.next_attempt_at)<=datetime(:now)) ORDER BY o.id LIMIT :limit"));q.bindValue(":now",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));q.bindValue(":limit",limit);if(q.exec())while(q.next()){SyncOutboxRecord r;r.id=q.value(0).toLongLong();r.idempotencyKey=q.value(1).toString();r.userId=q.value(2).toString();r.entityType=q.value(3).toString();r.entityUuid=q.value(4).toString();r.operation=q.value(5).toString();r.revision=q.value(6).toInt();r.privacyLevel=q.value(7).toString();r.payload=q.value(8).toString();r.createdAt=QDateTime::fromString(q.value(9).toString(),Qt::ISODateWithMs);r.retryCount=q.value(10).toInt();r.nextAttemptAt=QDateTime::fromString(q.value(11).toString(),Qt::ISODateWithMs);out<<r;}return out;}
+bool StorageService::markOutboxDelivered(qint64 id){QSqlDatabase db=QSqlDatabase::database(m_connectionName);QSqlQuery q(db);q.prepare(QStringLiteral("UPDATE sync_outbox SET status='delivered',last_error_code=NULL WHERE id=:id"));q.bindValue(":id",id);if(!(q.exec()&&q.numRowsAffected()==1))return false;QSqlQuery runtime(db);runtime.prepare(QStringLiteral("UPDATE sync_runtime SET last_success_at=:now,last_error_code=NULL,updated_at=:now WHERE id=1"));runtime.bindValue(":now",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));return runtime.exec();}
+bool StorageService::markOutboxRetry(qint64 id,const QString&error){QSqlDatabase db=QSqlDatabase::database(m_connectionName);QSqlQuery q(db);q.prepare(QStringLiteral("UPDATE sync_outbox SET status='retry',retry_count=retry_count+1,last_error_code=:error,next_attempt_at=datetime('now','+'||MIN(86400,60*(1 << MIN(retry_count,10)))||' seconds') WHERE id=:id"));q.bindValue(":error",error.left(64));q.bindValue(":id",id);if(!(q.exec()&&q.numRowsAffected()==1))return false;QSqlQuery runtime(db);runtime.prepare(QStringLiteral("UPDATE sync_runtime SET last_error_code=:error,updated_at=:now WHERE id=1"));runtime.bindValue(":error",error.left(64));runtime.bindValue(":now",QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));return runtime.exec();}
 
 bool StorageService::createSchema()
 {
@@ -601,7 +686,7 @@ bool StorageService::createSchema()
         || !query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_cognitive_due ON cognitive_records(status,scheduled_at,follow_up_at)"))
         || !query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_lollipop_date ON morning_lollipops(gift_date DESC)"))
         || !query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_lollipop_memorial ON lollipop_metadata(memorial_key)"))
-        || !query.exec(QStringLiteral("UPDATE schema_info SET version=18"))) {
+        || !query.exec(QStringLiteral("UPDATE schema_info SET version=18 WHERE version<18"))) {
         m_lastError = query.lastError().text();
         database.rollback();
         return false;

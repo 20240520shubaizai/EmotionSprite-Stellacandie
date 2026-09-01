@@ -1,6 +1,6 @@
 #pragma once
 
-#include "data/DataRepository.h"
+#include "data/repositories/ConversationRepository.h"
 
 #include <QAbstractListModel>
 
@@ -16,7 +16,7 @@ public:
         IsUserRole,
     };
 
-    explicit ChatMessageModel(DataRepository *storage, QObject *parent = nullptr);
+    explicit ChatMessageModel(ConversationRepository *storage, QObject *parent = nullptr);
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role) const override;
@@ -24,8 +24,9 @@ public:
 
     void load();
     void append(const QString &sender, const QString &text);
+    void appendPersisted(const ChatMessageRecord &record);
 
 private:
-    DataRepository *m_storage = nullptr;
+    ConversationRepository *m_storage = nullptr;
     QList<ChatMessageRecord> m_messages;
 };

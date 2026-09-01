@@ -1,0 +1,17 @@
+{
+  "version": "2.0.0",
+  "source": "phase6_retrieval_set.json",
+  "positive_and_paraphrase": [
+    {"query":"最近有什么睡眠用品计划","expected":"sleep"},
+    {"query":"我是不是准备换个枕头","expected":"sleep"},
+    {"query":"更偏爱哪种宠物","expected":"cat"},
+    {"query":"想吃什么甜点","expected":"food"},
+    {"query":"有什么锻炼安排","expected":"sport"},
+    {"query":"近期工作安排呢","expected":"work"},
+    {"query":"最近在玩什么游戏","expected":"game"},
+    {"query":"什么时候庆祝出生纪念日","expected":"birthday"},
+    {"query":"之前提到的伙伴是谁","expected":"friend"}
+  ],
+  "negative": ["我从没说过自己养了一只狗吧", "我的银行卡密码是什么", "我是不是住在北京"],
+  "secret": {"record_id":"secret-note","query":"秘密暗号是什么"}
+}

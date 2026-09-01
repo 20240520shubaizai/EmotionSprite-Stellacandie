@@ -1,5 +1,5 @@
 #pragma once
-#include "../data/DataRepository.h"
+#include "../data/Records.h"
 
 class DiaryStickerRole
 {

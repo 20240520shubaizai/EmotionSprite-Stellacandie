@@ -1,6 +1,6 @@
 #pragma once
 
-#include "data/DataRepository.h"
+#include "data/Records.h"
 
 #include <QNetworkAccessManager>
 #include <QObject>
@@ -21,7 +21,6 @@ public:
     bool isBusy() const;
     QString baseUrl() const;
     QString model() const;
-    QString requestContext() const;
     bool runOutputValidationSelfTest(QStringList *failures = nullptr) const;
 
     void sendChat(const QList<ChatMessageRecord> &history,
@@ -37,8 +36,9 @@ public:
 
 signals:
     void busyChanged(bool busy);
-    void chatCompleted(const QString &reply, const QString &emotion, const QJsonObject &stateEffect);
-    void chatFailed(const QString &message);
+    void chatCompleted(const QString &reply, const QString &emotion, const QJsonObject &stateEffect,
+                       const QString &requestContext);
+    void chatFailed(const QString &message, const QString &requestContext);
     void connectionTestFinished(bool success, const QString &message);
     void statusMessage(const QString &message);
     void memoryAnalysisCompleted(const QJsonArray &memories);
@@ -53,7 +53,8 @@ private:
     QString loadSystemPrompt() const;
     QString friendlyNetworkError(QNetworkReply *reply) const;
     bool shouldRetry(QNetworkReply *reply) const;
-    void sendChatRequest(const QByteArray &payload, int networkAttempt, int validationAttempt = 0);
+    void sendChatRequest(const QByteArray &payload, const QString &requestContext,
+                         int networkAttempt, int validationAttempt = 0);
     QStringList validateChatReply(const QString &reply, const QString &emotion, const QByteArray &requestPayload) const;
     QByteArray correctedRequestPayload(const QByteArray &requestPayload, const QStringList &issues) const;
     QByteArray relaxedResponsePayload(const QByteArray &requestPayload) const;
@@ -67,6 +68,5 @@ private:
     QString m_model = QStringLiteral("deepseek-v4-flash");
     QString m_apiKey;
     bool m_busy = false;
-    QString m_requestContext = QStringLiteral("chat");
     LogicRoleManager m_logicRoles;
 };

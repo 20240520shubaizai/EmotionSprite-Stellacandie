@@ -8,6 +8,7 @@
 namespace {
 constexpr wchar_t CredentialTarget[] = L"EmotionSprite/DeepSeekApiKey";
 constexpr wchar_t VisionCredentialTarget[] = L"EmotionSprite/SiliconFlowVisionApiKey";
+constexpr wchar_t SyncCredentialTarget[] = L"EmotionSprite/CloudSyncSessionToken";
 
 #ifdef Q_OS_WIN
 bool saveCredential(const wchar_t*target,const QString&value){if(value.isEmpty()){if(CredDeleteW(target,CRED_TYPE_GENERIC,0))return true;return GetLastError()==ERROR_NOT_FOUND;}const QByteArray utf8=value.toUtf8();CREDENTIALW c{};c.Type=CRED_TYPE_GENERIC;c.TargetName=const_cast<LPWSTR>(target);c.CredentialBlobSize=static_cast<DWORD>(utf8.size());c.CredentialBlob=reinterpret_cast<LPBYTE>(const_cast<char*>(utf8.constData()));c.Persist=CRED_PERSIST_LOCAL_MACHINE;c.UserName=const_cast<LPWSTR>(L"EmotionSprite");return CredWriteW(&c,0)==TRUE;}
@@ -80,3 +81,18 @@ QString AiCredentialStore::loadVisionApiKey(){
 #endif
 }
 bool AiCredentialStore::clearVisionApiKey(){return saveVisionApiKey(QString());}
+bool AiCredentialStore::saveSyncToken(const QString&token){
+#ifdef Q_OS_WIN
+    return saveCredential(SyncCredentialTarget,token);
+#else
+    Q_UNUSED(token) return false;
+#endif
+}
+QString AiCredentialStore::loadSyncToken(){
+#ifdef Q_OS_WIN
+    return loadCredential(SyncCredentialTarget);
+#else
+    return {};
+#endif
+}
+bool AiCredentialStore::clearSyncToken(){return saveSyncToken(QString());}

@@ -2,7 +2,7 @@
 #include <QRandomGenerator>
 #include <algorithm>
 
-PetStateEngine::PetStateEngine(DataRepository *storage,QObject *parent):QObject(parent),m_storage(storage){}
+PetStateEngine::PetStateEngine(PetStateRepository *storage,QObject *parent):QObject(parent),m_storage(storage){}
 int PetStateEngine::mood()const{return m_state.mood;} int PetStateEngine::energy()const{return m_state.energy;}
 int PetStateEngine::health()const{return m_state.health;} int PetStateEngine::closeness()const{return m_state.closeness;}
 int PetStateEngine::boredom()const{return m_state.boredom;} int PetStateEngine::neglect()const{return m_state.neglect;}

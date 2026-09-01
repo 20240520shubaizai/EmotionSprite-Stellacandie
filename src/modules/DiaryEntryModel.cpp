@@ -1,6 +1,6 @@
 #include "DiaryEntryModel.h"
 
-DiaryEntryModel::DiaryEntryModel(DataRepository *repository, QObject *parent)
+DiaryEntryModel::DiaryEntryModel(DiaryRepository *repository, QObject *parent)
     : QAbstractListModel(parent), m_repository(repository) {}
 
 int DiaryEntryModel::rowCount(const QModelIndex &parent) const

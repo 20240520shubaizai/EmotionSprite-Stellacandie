@@ -1,7 +1,10 @@
 #pragma once
 
 #include "FeatureModule.h"
-#include "../data/DataRepository.h"
+#include "../data/repositories/ConversationRepository.h"
+#include "../data/repositories/DreamRepository.h"
+#include "../data/repositories/MemoryRepository.h"
+#include "../data/repositories/PetStateRepository.h"
 #include <QTimer>
 
 class AiService;
@@ -9,7 +12,7 @@ class DreamModule final:public FeatureModule
 {
     Q_OBJECT
 public:
-    DreamModule(DataRepository *storage,AiService *ai,QObject *parent=nullptr);
+    DreamModule(ConversationRepository*,MemoryRepository*,PetStateRepository*,DreamRepository*,AiService*,QObject *parent=nullptr);
     QString id()const override{return QStringLiteral("dream_system");}
     QString displayName()const override{return QStringLiteral("梦境星星瓶");}
     bool isEnabled()const override{return m_enabled;}
@@ -35,5 +38,5 @@ private:
     void refresh();
     void startGeneration();
     QJsonObject buildContext()const;
-    DataRepository*m_storage=nullptr;AiService*m_ai=nullptr;bool m_enabled=true,m_busy=false;QString m_status;QList<DreamRecord>m_dreams;int m_selected=-1;QTimer m_timer;
+    ConversationRepository*m_conversations=nullptr;MemoryRepository*m_memories=nullptr;PetStateRepository*m_petState=nullptr;DreamRepository*m_storage=nullptr;AiService*m_ai=nullptr;bool m_enabled=true,m_busy=false;QString m_status;QList<DreamRecord>m_dreams;int m_selected=-1;QTimer m_timer;
 };

@@ -12,6 +12,8 @@
 #include "modules/VisionRecognitionModule.h"
 #include "modules/MorningLollipopModule.h"
 #include "VisionService.h"
+#include "agent/AgentClient.h"
+#include "agent/ChatAgentAdapter.h"
 
 #include <QAction>
 #include <QApplication>
@@ -31,50 +33,28 @@
 #include <QStandardPaths>
 #include <QRandomGenerator>
 #include <QRegularExpression>
-#include <QProcess>
-#include <QSaveFile>
 #include <QDateTime>
 #include <QTime>
-#include <QFileInfo>
-#include <QDesktopServices>
 #include <QUrl>
 
 #include <algorithm>
 
-void AppController::exportCocosRoomState()
+namespace {
+QList<ChatMessageRecord> recallSafeHistory(StorageService &storage,int limit)
 {
-    const QStringList emotions{QStringLiteral("neutral"),QStringLiteral("neutral"),QStringLiteral("happy"),
-        QStringLiteral("curious"),QStringLiteral("angry"),QStringLiteral("pouting"),QStringLiteral("affectionate"),
-        QStringLiteral("shy"),QStringLiteral("sleepy"),QStringLiteral("scared"),QStringLiteral("sick"),
-        QStringLiteral("recovering"),QStringLiteral("studying")};
-    const int hour=QTime::currentTime().hour();
-    const QString period=hour<6?QStringLiteral("night"):hour<12?QStringLiteral("morning"):
-        hour<18?QStringLiteral("afternoon"):QStringLiteral("evening");
-    const QString dir=QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).filePath(QStringLiteral("cocos_bridge"));
-    QDir().mkpath(dir);
-    const QJsonObject state{{"protocolVersion",1},{"revision",QDateTime::currentMSecsSinceEpoch()},
-        {"updatedAt",QDateTime::currentDateTime().toString(Qt::ISODate)},{"mood",mood()},{"energy",energy()},
-        {"health",health()},{"satiety",fullness()},{"intimacy",closeness()},
-        {"emotion",emotions.value(currentStateIndex(),QStringLiteral("neutral"))},{"activity",QStringLiteral("idle")},
-        {"weather",lollipopWeather().isEmpty()?QStringLiteral("clear"):lollipopWeather()},{"timePeriod",period}};
-    QSaveFile file(QDir(dir).filePath(QStringLiteral("pet_state.json")));
-    if(file.open(QIODevice::WriteOnly)){file.write(QJsonDocument(state).toJson(QJsonDocument::Indented));file.commit();}
-}
-
-void AppController::openCocosRoomPrototype()
-{
-    exportCocosRoomState();
-    const QString nativeRoom=QStringLiteral("D:/codex_qxjl/cocos/StellacandieRoom/build/windows/StellacandieRoom.exe");
-    const QString webRoom=QStringLiteral("D:/codex_qxjl/cocos/StellacandieRoom/build/web-desktop/index.html");
-    const QString editor=QStringLiteral("D:/Cocos/Creator/3.8.8/CocosCreator.exe");
-    const QString project=QStringLiteral("D:/codex_qxjl/cocos/StellacandieRoom");
-    if(QFileInfo::exists(nativeRoom)) {
-        QProcess::startDetached(nativeRoom, {}, QFileInfo(nativeRoom).absolutePath());
-    } else if(QFileInfo::exists(webRoom)) {
-        QDesktopServices::openUrl(QUrl::fromLocalFile(webRoom));
-    } else if(QFileInfo::exists(editor)&&QFileInfo::exists(project)) {
-        QProcess::startDetached(editor,{QStringLiteral("--project"),project});
+    QList<ChatMessageRecord> history=storage.loadRecentMessages(limit);
+    QStringList deletedSubjects;
+    for(const auto &memory:storage.loadManagedMemories(true)){
+        if((memory.deletedAt.isValid()||memory.memoryState==QStringLiteral("deleted"))&&memory.subject.trimmed().size()>=2)
+            deletedSubjects<<memory.subject.trimmed();
     }
+    if(deletedSubjects.isEmpty())return history;
+    history.erase(std::remove_if(history.begin(),history.end(),[&](const ChatMessageRecord &message){
+        for(const QString &subject:deletedSubjects)if(message.text.contains(subject,Qt::CaseInsensitive))return true;
+        return false;
+    }),history.end());
+    return history;
+}
 }
 
 AppController::AppController(QObject *parent)
@@ -102,8 +82,12 @@ AppController::AppController(QObject *parent)
             this, &AppController::setState);
     connect(&m_petStateEngine, &PetStateEngine::statsChanged,
             this, &AppController::petStatsChanged);
-
     QSettings aiSettings;
+    m_chatRouteMode = aiSettings.value(QStringLiteral("ai/chatRouteMode"),
+                                       QStringLiteral("agent_main")).toString();
+    if (m_chatRouteMode != QStringLiteral("agent_main") &&
+        m_chatRouteMode != QStringLiteral("legacy") &&
+        m_chatRouteMode != QStringLiteral("offline")) m_chatRouteMode = QStringLiteral("agent_main");
     const QString apiBaseUrl = aiSettings.value(QStringLiteral("ai/baseUrl"),
                                                  QStringLiteral("https://api.deepseek.com")).toString();
     const QString apiModel = aiSettings.value(QStringLiteral("ai/model"),
@@ -119,8 +103,8 @@ AppController::AppController(QObject *parent)
         emit aiStateChanged();
     });
     connect(&m_aiService, &AiService::chatCompleted, this,
-            [this](const QString &reply, const QString &emotion, const QJsonObject &stateEffect) {
-        if (m_aiService.requestContext() != QStringLiteral("chat")) return;
+            [this](const QString &reply, const QString &emotion, const QJsonObject &stateEffect, const QString &requestContext) {
+        if (requestContext != QStringLiteral("chat")) return;
         if(m_memeCulture)m_memeCulture->recordAssistantReply(reply);
         m_lastAssistantReply = reply;
         m_chatModel.append(QStringLiteral("pet"), reply);
@@ -130,26 +114,28 @@ AppController::AppController(QObject *parent)
             setState(suggested);
             QTimer::singleShot(6000,this,[this]{setState(m_petStateEngine.currentResolvedState());});
         }
-        m_aiStatus = QStringLiteral("AI在线");
+        m_aiStatus = m_legacyFallbackReason.isEmpty() ? QStringLiteral("旧链路 · 完成")
+            : QStringLiteral("旧链路回退 · 完成（%1）").arg(m_legacyFallbackReason);
+        m_legacyFallbackReason.clear();
         m_pendingUserText.clear();
         emit aiStateChanged();
         if (m_longTermMemory) QTimer::singleShot(0, m_longTermMemory, &LongTermMemoryModule::analyzeRecentConversation);
     });
-    connect(&m_aiService, &AiService::chatFailed, this, [this](const QString &message) {
-        if (m_aiService.requestContext() != QStringLiteral("chat")) return;
+    connect(&m_aiService, &AiService::chatFailed, this, [this](const QString &message, const QString &requestContext) {
+        if (requestContext != QStringLiteral("chat")) return;
         m_aiStatus = message;
         appendOfflineReply(m_pendingUserText);
         m_pendingUserText.clear();
         emit aiStateChanged();
     });
-    connect(&m_aiService, &AiService::chatCompleted, this, [this](const QString &reply, const QString &emotion, const QJsonObject &stateEffect) {
-        if (m_aiService.requestContext() != QStringLiteral("personality_test") || m_trainingIndex < 0) return;
+    connect(&m_aiService, &AiService::chatCompleted, this, [this](const QString &reply, const QString &emotion, const QJsonObject &stateEffect, const QString &requestContext) {
+        if (requestContext != QStringLiteral("personality_test") || m_trainingIndex < 0) return;
         m_trainingResults.append(QJsonObject{{"id",m_trainingIds.value(m_trainingIndex)},{"input",m_trainingInputs.value(m_trainingIndex)},
             {"reply",reply},{"emotion",emotion},{"state_effect",stateEffect},{"status","completed"}});
         ++m_trainingIndex; QTimer::singleShot(500,this,&AppController::runNextPersonalityCase);
     });
-    connect(&m_aiService, &AiService::chatFailed, this, [this](const QString &message) {
-        if (m_aiService.requestContext() != QStringLiteral("personality_test") || m_trainingIndex < 0) return;
+    connect(&m_aiService, &AiService::chatFailed, this, [this](const QString &message, const QString &requestContext) {
+        if (requestContext != QStringLiteral("personality_test") || m_trainingIndex < 0) return;
         m_trainingResults.append(QJsonObject{{"id",m_trainingIds.value(m_trainingIndex)},{"input",m_trainingInputs.value(m_trainingIndex)},
             {"error",message},{"status","network_failed"}});
         ++m_trainingIndex; QTimer::singleShot(500,this,&AppController::runNextPersonalityCase);
@@ -163,7 +149,7 @@ AppController::AppController(QObject *parent)
     if (m_storage.initialize()) {
         m_chatModel.load();
         m_petStateEngine.load();
-        m_reverseDiary = new ReverseDiaryModule(&m_storage, &m_aiService);
+        m_reverseDiary = new ReverseDiaryModule(&m_storage,&m_storage,&m_storage,&m_storage,&m_aiService);
         m_moduleManager.registerModule(m_reverseDiary);
         m_diaryModel.refresh();
         selectDiary(0);
@@ -185,7 +171,7 @@ AppController::AppController(QObject *parent)
             m_aiStatus = QStringLiteral("反向日记失败：%1").arg(message);
             emit aiStateChanged();
         });
-        m_longTermMemory = new LongTermMemoryModule(&m_storage, &m_aiService);
+        m_longTermMemory = new LongTermMemoryModule(&m_storage,&m_storage,&m_aiService);
         m_moduleManager.registerModule(m_longTermMemory);
         m_memoryModel.refresh();
         connect(m_longTermMemory,&LongTermMemoryModule::memoriesChanged,this,[this]{m_memoryModel.refresh();emit memoryStateChanged();});
@@ -199,13 +185,13 @@ AppController::AppController(QObject *parent)
         connect(m_summaryMagic,&SummaryMagicModule::enabledChanged,this,&AppController::summaryMagicChanged);
         connect(m_summaryMagic,&SummaryMagicModule::studyStarted,this,[this](const QString&m){m_chatModel.append(QStringLiteral("pet"),m);});
         connect(m_summaryMagic,&SummaryMagicModule::studyFinished,this,[this](const QString&m){m_chatModel.append(QStringLiteral("pet"),m);});
-        m_dreamModule=new DreamModule(&m_storage,&m_aiService,this);m_moduleManager.registerModule(m_dreamModule);
+        m_dreamModule=new DreamModule(&m_storage,&m_storage,&m_storage,&m_storage,&m_aiService,this);m_moduleManager.registerModule(m_dreamModule);
         connect(m_dreamModule,&DreamModule::changed,this,&AppController::dreamChanged);
         connect(m_dreamModule,&DreamModule::enabledChanged,this,&AppController::dreamChanged);
         connect(m_dreamModule,&DreamModule::echoResponseReady,this,[this](const QString&reply){m_chatModel.append(QStringLiteral("pet"),reply);m_petStateEngine.applySemanticEffect(QJsonObject{{"mood",3},{"closeness",2},{"curiosity",1},{"confidence",100}});emit dreamChanged();});
         m_visionRecognition=new VisionRecognitionModule(m_visionService,this);m_moduleManager.registerModule(m_visionRecognition);connect(m_visionRecognition,&VisionRecognitionModule::changed,this,&AppController::visionChanged);connect(m_visionRecognition,&VisionRecognitionModule::enabledChanged,this,&AppController::visionChanged);connect(m_visionRecognition,&VisionRecognitionModule::recognized,this,[this](const QJsonObject&o,const QString&note){if(m_dreamModule)m_dreamModule->submitVisualRealityEcho(o,note);emit dreamChanged();});
         connect(m_visionRecognition,&VisionRecognitionModule::chatRecognized,this,[this](const QJsonObject&o,const QString&note,const QString&fileName){
-            if(m_aiService.isBusy())return;
+            if(aiBusy())return;
             const QString userText=QStringLiteral("【图片：%1】%2").arg(fileName,note.trimmed().isEmpty()?QString():QStringLiteral("\n")+note.trimmed());
             m_chatModel.append(QStringLiteral("user"),userText);m_pendingUserText=userText;
             if(m_adaptiveLearning)m_adaptiveLearning->observeUserResponse(note,m_lastAssistantReply);
@@ -220,10 +206,10 @@ AppController::AppController(QObject *parent)
             QStringList objects;for(const auto&v:o.value(QStringLiteral("objects")).toArray())objects<<v.toString();
             const QString context=QStringLiteral("[CHAT_PHOTO] 视觉角色确认：%1\n可确认对象：%2\n用户附言：%3\n%4\n像真正看到用户发来的照片一样回复：先回应用户为什么分享，再挑一个最值得注意的事实表达感受；最多一个追问，50到110字，只生成一段。禁止罗列识图结果，禁止把不确定内容说成事实，想象必须使用‘像、感觉、让我想到’等标记。")
                 .arg(o.value(QStringLiteral("description")).toString(),objects.join(QStringLiteral("、")),note.left(500),dreamRule);
-            m_aiService.sendChat(m_storage.loadRecentMessages(20),mood(),energy(),health(),closeness(),boredom(),neglect(),curiosity(),irritation(),QStringLiteral("chat"),context);
+            sendViaSelectedChatRoute(userText, context, fileName);
             m_visionRecognition->clear();emit visionChanged();
         });
-        m_proactiveBehavior=new ProactiveBehaviorModule(&m_storage,this);
+        m_proactiveBehavior=new ProactiveBehaviorModule(&m_storage,&m_storage,this);
         m_moduleManager.registerModule(m_proactiveBehavior);
         connect(m_proactiveBehavior,&ProactiveBehaviorModule::settingsChanged,this,&AppController::proactiveStateChanged);
         connect(m_proactiveBehavior,&ProactiveBehaviorModule::enabledChanged,this,&AppController::proactiveStateChanged);
@@ -309,10 +295,68 @@ int AppController::curiosity() const { return m_petStateEngine.curiosity(); }
 int AppController::irritation() const { return m_petStateEngine.irritation(); }
 int AppController::fullness() const { return m_petStateEngine.fullness(); }
 bool AppController::aiConfigured() const { return m_aiService.isConfigured(); }
-bool AppController::aiBusy() const { return m_aiService.isBusy(); }
+bool AppController::aiBusy() const { return m_aiService.isBusy() || (m_chatAgent && m_chatAgent->pendingCount() > 0); }
 QString AppController::aiStatus() const { return m_aiStatus; }
 QString AppController::aiBaseUrl() const { return m_aiService.baseUrl(); }
 QString AppController::aiModel() const { return m_aiService.model(); }
+QString AppController::chatRouteMode() const { return m_chatRouteMode; }
+QString AppController::chatRouteLabel() const
+{
+    if (m_chatRouteMode == QStringLiteral("offline")) return QStringLiteral("强制离线");
+    if (m_chatRouteMode == QStringLiteral("legacy")) return QStringLiteral("旧链路");
+    return QStringLiteral("Agent主链路");
+}
+
+void AppController::setAgentClient(AgentClient *client)
+{
+    if (m_chatAgent) m_chatAgent->deleteLater();
+    m_agentClient = client;
+    m_chatAgent = client ? new ChatAgentAdapter(client, this) : nullptr;
+    if (!m_chatAgent) return;
+    connect(m_chatAgent, &ChatAgentAdapter::completed, this,
+            [this](const QString &requestId, const QString &reply, const QString &emotion,
+                   const QJsonObject &effect, const QString &traceId,const QJsonArray &mutations) {
+        if (!m_agentTexts.contains(requestId)) return;
+        m_agentTexts.remove(requestId); m_agentContexts.remove(requestId);
+        if (m_memeCulture) m_memeCulture->recordAssistantReply(reply);
+        m_lastAssistantReply = reply;
+        const QJsonObject commit=m_storage.commitAgentTurn(requestId,traceId,reply,mutations);
+        if(!commit.value(QStringLiteral("committed")).toBool()){m_aiStatus=QStringLiteral("Agent回复写入失败：%1").arg(commit.value("error").toString());emit aiStateChanged();return;}
+        ChatMessageRecord persisted;persisted.id=commit.value("message_id").toVariant().toLongLong();persisted.sender=QStringLiteral("pet");persisted.text=reply;persisted.createdAt=QDateTime::currentDateTime();m_chatModel.appendPersisted(persisted);
+        for(const auto &item:commit.value(QStringLiteral("record_ids")).toArray()){
+            const QString kind=item.toObject().value(QStringLiteral("kind")).toString();
+            if(kind==QStringLiteral("reminder"))emit proactiveStateChanged();
+            if(kind==QStringLiteral("memory_candidate"))emit memoryStateChanged();
+        }
+        Q_UNUSED(effect);m_petStateEngine.load();
+        const int suggested = stateIndexForEmotion(emotion);
+        if (suggested >= 0 && currentStateIndex() != 10) setState(suggested);
+        m_aiStatus = QStringLiteral("Agent主链路 · 完成 · Trace %1").arg(traceId.left(8));
+        m_pendingUserText.clear(); emit aiStateChanged();
+        if (m_longTermMemory) QTimer::singleShot(0, m_longTermMemory, &LongTermMemoryModule::analyzeRecentConversation);
+    });
+    connect(m_chatAgent, &ChatAgentAdapter::failed, this,
+            [this](const QString &requestId, const QString &code, const QString &message) {
+        const QString content = m_agentTexts.take(requestId);
+        const QString context = m_agentContexts.take(requestId);
+        if (content.isEmpty()) return;
+        if (m_chatRouteMode == QStringLiteral("agent_main") && m_aiService.isConfigured()) {
+            sendViaLegacyChat(content, context, QStringLiteral("%1：%2").arg(code, message));
+        } else {
+            m_aiStatus = QStringLiteral("Agent失败且未启用旧链路：%1").arg(code);
+            appendOfflineReply(content); m_pendingUserText.clear(); emit aiStateChanged();
+        }
+    });
+    emit aiStateChanged();
+}
+
+void AppController::setChatRouteMode(const QString &mode)
+{
+    if (mode != QStringLiteral("agent_main") && mode != QStringLiteral("legacy") && mode != QStringLiteral("offline")) return;
+    if (m_chatRouteMode == mode) return;
+    m_chatRouteMode = mode; QSettings().setValue(QStringLiteral("ai/chatRouteMode"), mode);
+    m_aiStatus = QStringLiteral("聊天模式已切换为%1").arg(chatRouteLabel()); emit aiStateChanged();
+}
 QAbstractItemModel *AppController::diaryModel() { return &m_diaryModel; }
 int AppController::diaryCount() const { return m_diaryModel.rowCount(); }
 QString AppController::selectedDiaryDate() const { return m_selectedDiary.entryDate.toString(QStringLiteral("yyyy年M月d日")); }
@@ -497,7 +541,6 @@ void AppController::createTrayIcon()
     auto *summaryAction = menu->addAction(QStringLiteral("AI总结魔法"));
     auto *dreamAction = menu->addAction(QStringLiteral("梦境星星瓶"));
     auto *lollipopAction = menu->addAction(QStringLiteral("晨间糖果罐"));
-    auto *cocosRoomAction = menu->addAction(QStringLiteral("打开精灵房间（Cocos）"));
     menu->addSeparator();
     auto *quitAction = menu->addAction(QStringLiteral("退出"));
 
@@ -512,7 +555,6 @@ void AppController::createTrayIcon()
     connect(summaryAction,&QAction::triggered,this,&AppController::openSummaryMagic);
     connect(dreamAction,&QAction::triggered,this,&AppController::openDreamBottle);
     connect(lollipopAction,&QAction::triggered,this,&AppController::openMorningLollipop);
-    connect(cocosRoomAction,&QAction::triggered,this,&AppController::openCocosRoomPrototype);
     connect(this, &AppController::alwaysOnTopChanged, topAction, [this, topAction] {
         topAction->setChecked(m_alwaysOnTop);
     });
@@ -569,6 +611,7 @@ void AppController::setAlwaysOnTop(bool enabled)
 {
     m_alwaysOnTop = enabled;
     QSettings().setValue(QStringLiteral("window/alwaysOnTop"), enabled);
+    m_storage.setSyncSetting(QStringLiteral("always_on_top"),enabled?QStringLiteral("true"):QStringLiteral("false"));
 
     if (m_window) {
         Qt::WindowFlags flags = Qt::Tool | Qt::FramelessWindowHint;
@@ -626,27 +669,22 @@ void AppController::sendMessage(const QString &text)
         m_chatModel.append(QStringLiteral("pet"),reply);m_lastAssistantReply=reply;emit learningStateChanged();
     })) return;
     QString directiveReply;
-    if(m_proactiveBehavior&&m_proactiveBehavior->handleUserMessage(content,&directiveReply)){m_chatModel.append(QStringLiteral("pet"),directiveReply);emit proactiveStateChanged();return;}
+    const bool agentOwnsReminder=m_chatRouteMode==QStringLiteral("agent_main")
+        &&QRegularExpression(QStringLiteral("提醒|记得|别忘")).match(content).hasMatch();
+    if(!agentOwnsReminder&&m_proactiveBehavior&&m_proactiveBehavior->handleUserMessage(content,&directiveReply)){m_chatModel.append(QStringLiteral("pet"),directiveReply);emit proactiveStateChanged();return;}
     if (m_longTermMemory && m_longTermMemory->handleUserDirective(content, &directiveReply)) {
         m_chatModel.append(QStringLiteral("pet"), directiveReply);
         m_aiStatus = QStringLiteral("长期记忆已更新");
         emit aiStateChanged();
         return;
     }
-    if (m_aiService.isConfigured()) {
+    if ((m_chatRouteMode == QStringLiteral("agent_main") && m_chatAgent) || m_aiService.isConfigured()) {
         m_pendingUserText = content;
         QString context;
-        QString memoryContext;
         if (m_longTermMemory) {
-            memoryContext=m_longTermMemory->relevantContext(content);
-            context=m_longTermMemory->personalityContext(closeness(),boredom())+QStringLiteral("\n")+memoryContext;
+            context=m_longTermMemory->personalityContext(closeness(),boredom());
         }
-        if(m_dreamModule){const QString dreamContext=m_dreamModule->conversationContext(content,closeness());if(!dreamContext.isEmpty())context+=QStringLiteral("\n")+dreamContext;}
-        const bool hasRetrievedMemory=memoryContext.contains(QStringLiteral("[MEMORY_CONTEXT]"));
-        const bool memorySlipAllowed=hasRetrievedMemory&&QRandomGenerator::global()->bounded(100)<4;
-        context+=memorySlipAllowed
-            ?QStringLiteral("\n[MEMORY_SLIP_ALLOWED] 本轮可偶发一次记忆小偏差：只能基于上方真实检索到的记忆，改错一个不重要的小细节，并立刻用不确定语气向用户确认。不得改错人物、日期、提醒、承诺、健康、安全或珍贵事件。")
-            :QStringLiteral("\n[NO_MEMORY_SLIP] 本轮不得故意记错任何事件；没有检索依据时尤其不得声称用户以前讲过。") ;
+        context+=QStringLiteral("\n[MEMORY_POLICY] 用户事实只能使用 Agent memory_retrieve_v2 提供的带 record_id 来源；梦境、日记和照片内容不得自动升级为用户事实。无来源时不得声称用户以前讲过。");
         const QRegularExpression noTopicRe(QStringLiteral("(?:没话题|没什么聊|不知道聊什么|你说点什么|随便聊聊|好无聊|无聊死了)"));
         const bool imaginationAllowed=noTopicRe.match(content).hasMatch()&&QRandomGenerator::global()->bounded(100)<3;
         context+=imaginationAllowed
@@ -654,11 +692,58 @@ void AppController::sendMessage(const QString &text)
             :QStringLiteral("\n[NO_INVENTED_EVENT] 本轮禁止凭空编造用户经历或假装发生过不存在的现实事件。没话题时可以提议小游戏、问一个具体问题，或坦率说你也在想话题。") ;
         if(m_adaptiveLearning){if(!context.isEmpty())context+=QStringLiteral("\n");context+=m_adaptiveLearning->context();}
         context+=QStringLiteral("\n")+m_petStateEngine.healthContext();
-        const auto send=[this,content](const QString &enriched){if(m_pendingUserText!=content||m_aiService.isBusy())return;m_aiService.sendChat(m_storage.loadRecentMessages(20),mood(),energy(),health(),closeness(),boredom(),neglect(),curiosity(),irritation(),QStringLiteral("chat"),enriched);};
+        const auto send=[this,content](const QString &enriched){
+            if(m_pendingUserText!=content)return;
+            // The Agent chat queue is independent from legacy/background AI work
+            // (for example automatic diary generation).  Only another Agent chat
+            // may suppress this request; unrelated AiService work must not drop it.
+            if(m_chatRouteMode==QStringLiteral("agent_main")&&m_chatAgent&&m_chatAgent->pendingCount()>0)return;
+            if(m_chatRouteMode!=QStringLiteral("agent_main")&&m_aiService.isBusy())return;
+            sendViaSelectedChatRoute(content,enriched);
+        };
         if(m_memeCulture)m_memeCulture->enrichContext(content,context,send);else send(context);
     } else {
         appendOfflineReply(content);
     }
+}
+
+void AppController::sendViaSelectedChatRoute(const QString &content, const QString &context,
+                                             const QString &attachmentName)
+{
+    if (m_chatRouteMode == QStringLiteral("offline")) {
+        m_aiStatus = QStringLiteral("强制离线 · 未访问Agent或旧AI");
+        appendOfflineReply(content); m_pendingUserText.clear(); emit aiStateChanged(); return;
+    }
+    if (m_chatRouteMode == QStringLiteral("legacy")) {
+        sendViaLegacyChat(content, context); return;
+    }
+    if (!m_chatAgent) {
+        sendViaLegacyChat(content, context, QStringLiteral("agent_adapter_missing")); return;
+    }
+    const QJsonObject state{{QStringLiteral("mood"), mood()}, {QStringLiteral("energy"), energy()},
+        {QStringLiteral("health"), health()}, {QStringLiteral("closeness"), closeness()},
+        {QStringLiteral("boredom"), boredom()}, {QStringLiteral("neglect"), neglect()},
+        {QStringLiteral("curiosity"), curiosity()}, {QStringLiteral("irritation"), irritation()}};
+    const QString requestId = m_chatAgent->sendText(content, recallSafeHistory(m_storage,20),
+                                                     context, state, true, attachmentName);
+    m_agentTexts.insert(requestId, content); m_agentContexts.insert(requestId, context);
+    m_aiStatus = QStringLiteral("Agent主链路 · 请求 %1").arg(requestId.left(8)); emit aiStateChanged();
+}
+
+void AppController::sendViaLegacyChat(const QString &content, const QString &context,
+                                      const QString &fallbackReason)
+{
+    if (!m_aiService.isConfigured()) {
+        m_aiStatus = fallbackReason.isEmpty() ? QStringLiteral("旧链路未配置")
+            : QStringLiteral("Agent失败且旧链路不可用：%1").arg(fallbackReason);
+        appendOfflineReply(content); m_pendingUserText.clear(); emit aiStateChanged(); return;
+    }
+    m_legacyFallbackReason = fallbackReason;
+    m_aiStatus = fallbackReason.isEmpty() ? QStringLiteral("旧链路 · 正在回复")
+        : QStringLiteral("Agent不可用，显式回退旧链路：%1").arg(fallbackReason);
+    emit aiStateChanged();
+    m_aiService.sendChat(recallSafeHistory(m_storage,20), mood(), energy(), health(), closeness(),
+                         boredom(), neglect(), curiosity(), irritation(), QStringLiteral("chat"), context);
 }
 
 void AppController::adjustPetStat(const QString &stat, int delta)
@@ -683,8 +768,8 @@ void AppController::healPet(){m_petStateEngine.healForDebug();}
 void AppController::letPetRest(){m_petStateEngine.rest();}
 
 void AppController::openProactiveSettings(){emit requestProactiveWindow();}
-void AppController::setProactiveEnabled(bool enabled){if(m_proactiveBehavior)m_proactiveBehavior->setEnabled(enabled);}
-void AppController::setDoNotDisturb(bool enabled){if(m_proactiveBehavior)m_proactiveBehavior->setDoNotDisturb(enabled);}
+void AppController::setProactiveEnabled(bool enabled){if(m_proactiveBehavior)m_proactiveBehavior->setEnabled(enabled);m_storage.setSyncSetting(QStringLiteral("proactive_enabled"),enabled?QStringLiteral("true"):QStringLiteral("false"));}
+void AppController::setDoNotDisturb(bool enabled){if(m_proactiveBehavior)m_proactiveBehavior->setDoNotDisturb(enabled);m_storage.setSyncSetting(QStringLiteral("do_not_disturb"),enabled?QStringLiteral("true"):QStringLiteral("false"));}
 void AppController::saveProactiveSettings(int limit,int start,int end){if(!m_proactiveBehavior)return;m_proactiveBehavior->setDailyLimit(limit);m_proactiveBehavior->setQuietHours(start,end);}
 void AppController::addLifestyleReminder(const QString &message,int minutesFromNow){if(!m_proactiveBehavior)return;const QString text=message.trimmed();if(text.isEmpty())return;
     if(m_proactiveBehavior->schedule(QStringLiteral("lifestyle"),QDateTime::currentDateTime().addSecs(qMax(1,minutesFromNow)*60),text)){m_aiStatus=QStringLiteral("提醒已经记下了");emit aiStateChanged();}}
@@ -706,7 +791,7 @@ void AppController::runDataCleanup(){if(m_dataCleanup)m_dataCleanup->runMaintena
 void AppController::toggleMemoryLock(int row){if(m_dataCleanup)m_dataCleanup->toggleLock(row);}
 void AppController::setManagedMemoryState(int row,const QString&state){if(m_dataCleanup)m_dataCleanup->setState(row,state);}
 void AppController::restoreManagedMemory(int row){if(m_dataCleanup)m_dataCleanup->restore(row);}
-void AppController::deleteManagedMemory(int row){if(m_dataCleanup)m_dataCleanup->softDelete(row);}
+void AppController::deleteManagedMemory(int row){if(m_dataCleanup&&m_dataCleanup->softDelete(row)){m_memoryModel.refresh();emit memoryStateChanged();}}
 void AppController::openSummaryMagic(){emit requestSummaryMagicWindow();}
 bool AppController::loadSummaryFile(const QString&url){return m_summaryMagic&&m_summaryMagic->loadFile(QUrl(url));}
 void AppController::generateSummary(const QString&text,const QString&mode,const QString&userInstruction){if(!m_summaryMagic)return;m_summaryMagic->setInputText(text);m_summaryMagic->generate(mode,userInstruction);}
@@ -768,6 +853,7 @@ void AppController::saveAiSettings(const QString &apiKey, const QString &baseUrl
     m_aiStatus = m_aiService.isConfigured() ? QStringLiteral("设置已保存，请测试连接。")
                                              : QStringLiteral("尚未填写API Key。");
     emit aiStateChanged();
+    emit agentConfigurationChanged();
 }
 
 void AppController::clearAiKey()
@@ -777,6 +863,7 @@ void AppController::clearAiKey()
     m_aiService.configure(m_aiService.baseUrl(), m_aiService.model(), QString());
     m_aiStatus = QStringLiteral("API Key已清除，当前为离线模式。");
     emit aiStateChanged();
+    emit agentConfigurationChanged();
 }
 
 void AppController::testAiConnection()
@@ -1023,10 +1110,11 @@ void AppController::generateDiary()
 void AppController::setReverseDiaryEnabled(bool enabled)
 {
     if (m_reverseDiary) m_reverseDiary->setEnabled(enabled);
+    m_storage.setSyncSetting(QStringLiteral("reverse_diary_enabled"),enabled?QStringLiteral("true"):QStringLiteral("false"));
 }
 
 void AppController::openMemory() { emit requestMemoryWindow(); }
-void AppController::setLongTermMemoryEnabled(bool enabled) { if (m_longTermMemory) m_longTermMemory->setEnabled(enabled); }
+void AppController::setLongTermMemoryEnabled(bool enabled) { if (m_longTermMemory) m_longTermMemory->setEnabled(enabled);m_storage.setSyncSetting(QStringLiteral("memory_enabled"),enabled?QStringLiteral("true"):QStringLiteral("false")); }
 
 void AppController::appendOfflineReply(const QString &userText)
 {

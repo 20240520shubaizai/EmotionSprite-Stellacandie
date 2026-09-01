@@ -1,7 +1,7 @@
 #pragma once
 
 #include "FeatureModule.h"
-#include "../data/DataRepository.h"
+#include "../data/repositories/MorningLollipopRepository.h"
 #include <QTimer>
 #include <QNetworkAccessManager>
 
@@ -11,7 +11,7 @@ class MorningLollipopModule final : public FeatureModule
 {
     Q_OBJECT
 public:
-    MorningLollipopModule(DataRepository *storage,AiService *ai,QObject *parent=nullptr);
+    MorningLollipopModule(MorningLollipopRepository*,AiService*,QObject *parent=nullptr);
     QString id()const override{return QStringLiteral("morning_lollipop");}
     QString displayName()const override{return QStringLiteral("晨间棒棒糖");}
     bool isEnabled()const override{return m_enabled;}
@@ -35,7 +35,7 @@ private:
     void refresh(); void prepareGreeting(MorningLollipopRecord record); void deliver(MorningLollipopRecord record,const QDateTime&now,bool test=false);
     bool applyMemorial(MorningLollipopRecord&r,const QDateTime&now)const; void setPickingStage(const QString&stage,const QString&line);
     QString weatherDeliveryLine()const;
-    DataRepository*m_storage=nullptr; AiService*m_ai=nullptr; QTimer m_timer;
+    MorningLollipopRepository*m_storage=nullptr;AiService*m_ai=nullptr;QTimer m_timer;
     bool m_enabled=true,m_preparing=false; int m_workdayStart=450,m_workdayEnd=600,m_weekendStart=540,m_weekendEnd=690;
     QString m_status; QList<MorningLollipopRecord>m_items; int m_selected=0;
     QNetworkAccessManager m_weatherNetwork; QString m_city,m_weatherType=QStringLiteral("unknown"),m_weatherText=QStringLiteral("天气尚未同步");

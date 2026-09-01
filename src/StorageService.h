@@ -1,16 +1,20 @@
 #pragma once
 
 #include "data/DataRepository.h"
+#include <QJsonArray>
+#include <QJsonObject>
 
 class StorageService final : public DataRepository
 {
 public:
     StorageService();
+    explicit StorageService(const QString &databasePathOverride);
     ~StorageService();
 
     bool initialize();
     QString databasePath() const;
     QString lastError() const;
+    int schemaVersion() const;
 
     QList<ChatMessageRecord> loadRecentMessages(int limit = 100) const override;
     ChatMessageRecord addMessage(const QString &sender, const QString &text) override;
@@ -46,6 +50,8 @@ public:
     bool updateCognitiveRecord(qint64 id,const QString &status,const QDateTime &scheduledAt=QDateTime(),const QDateTime &followUpAt=QDateTime(),int followUpCount=-1,qint64 reminderId=-1) override;
     QList<CognitiveRecord> loadDueCognitiveFollowUps(const QDateTime &now,int limit=20) const override;
     int archiveExpiredCognitiveRecords(const QDateTime &now) override;
+    qint64 addCognitiveReminderAtomic(const CognitiveRecord &record, const QString &reminderType,
+                                      const QDateTime &scheduledAt, const QString &payload) override;
     int removeTimeBoundMemories() override;
     bool addSnackToInventory(const QString &type,const QString &name,const QString &emoji,int nutrition) override;
     QList<SnackInventoryRecord> loadSnackInventory() const override;
@@ -72,6 +78,19 @@ public:
     bool hasMorningLollipopMemorial(const QString &memorialKey) const override;
     PetStateRecord loadPetState() const override;
     bool savePetState(const PetStateRecord &state) override;
+    bool setSyncEnabled(const QString &type,bool enabled) override;
+    bool syncEnabled(const QString &type) const override;
+    bool setSyncMasterEnabled(bool enabled) override;
+    bool syncMasterEnabled() const override;
+    QString syncDeviceId() const override;
+    QJsonObject syncStatus() const override;
+    bool setSyncSetting(const QString &key,const QString &value) override;
+    bool setEntitySyncPrivacy(const QString &type,const QString &uuid,const QString &privacy) override;
+    QList<SyncOutboxRecord> loadPendingOutbox(int limit=50) const override;
+    bool markOutboxDelivered(qint64 id) override;
+    bool markOutboxRetry(qint64 id,const QString &errorCode) override;
+    QJsonObject commitAgentTurn(const QString &requestId,const QString &traceId,const QString &assistantText,
+                                const QJsonArray &proposals,bool injectFailure=false);
 
 private:
     bool createSchema();
@@ -80,4 +99,5 @@ private:
     QString m_connectionName;
     QString m_databasePath;
     QString m_lastError;
+    QString m_databasePathOverride;
 };

@@ -18,7 +18,7 @@ QString normalizedDirectory(const QString &path)
 }
 }
 
-FileSnackModule::FileSnackModule(DataRepository *storage, QObject *parent)
+FileSnackModule::FileSnackModule(CollectionRepository *storage, QObject *parent)
     : FeatureModule(parent), m_storage(storage)
 {
     m_enabled = QSettings().value(QStringLiteral("modules/fileSnackEnabled"), true).toBool();

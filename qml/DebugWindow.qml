@@ -10,6 +10,8 @@ Window {
     width: 430; height: 650; visible: false
     title: "情绪精灵调试面板"; color: "#FFF9F4"
     flags: Qt.Tool | Qt.WindowTitleHint | Qt.WindowCloseButtonHint | Qt.WindowStaysOnTopHint
+    property string diagnosticsRequestId: ""
+    property string diagnosticsText: "诊断信息默认隐藏，点击后只显示脱敏 Trace 与汇总指标。"
     function openNearPet(){x=Math.max(12,petWindow.x-width-10);y=Math.max(12,petWindow.y);show();raise();requestActivate()}
     ScrollView { anchors.fill: parent; anchors.margins: 16
         ColumnLayout { width: parent.width; spacing: 12
@@ -47,11 +49,33 @@ Window {
             GroupBox { title: "随机事件测试"; Layout.fillWidth: true
                 RowLayout { anchors.fill: parent; Button { text: "老鼠追逐"; onClicked: window.requestMouseEvent() } }
             }
+            GroupBox { title: "Agent Trace（开发者）"; Layout.fillWidth: true
+                ColumnLayout { anchors.fill: parent
+                    Label { text: "正式模式不自动采集或展示正文、秘密记忆和密钥。"; wrapMode: Text.Wrap; Layout.fillWidth: true; color: "#80696C" }
+                    RowLayout {
+                        Button { text: "刷新脱敏诊断"; enabled: agentClient.available; onClicked: {
+                            window.diagnosticsText="正在读取……"
+                            window.diagnosticsRequestId=agentClient.submit("diagnostics_snapshot_v1",{},5000,"background")
+                        } }
+                        Label { text: agentClient.available ? "Agent 在线" : "Agent 离线"; color: agentClient.available ? "#56805B" : "#A56363" }
+                    }
+                    TextArea { Layout.fillWidth: true; Layout.preferredHeight: 160; readOnly: true; wrapMode: TextEdit.WrapAnywhere; text: window.diagnosticsText }
+                }
+            }
             GridLayout { columns: 2; Layout.fillWidth: true
                 Label { text: "亲密："+appController.closeness } Label { text: "无聊："+appController.boredom }
                 Label { text: "冷落："+appController.neglect } Label { text: "桌面动作："+(appController.desktopRoaming?appController.desktopAnimation:"待机") }
             }
             RowLayout { Layout.fillWidth: true; Item { Layout.fillWidth: true } Button { text: "全部重置"; onClicked: appController.resetPetStats() } }
         }
+    }
+    Connections {
+        target: agentClient
+        function onRequestFinished(requestId,result){
+            if(requestId!==window.diagnosticsRequestId)return
+            const m=result.metrics||{}
+            window.diagnosticsText="请求数："+(m.requests||0)+"\n失败："+(m.failures||0)+"　重试："+(m.retries||0)+"　降级："+(m.degraded||0)+"\n平均延迟："+(m.average_latency_ms||0)+" ms\nToken："+(m.total_tokens||0)+"　估算成本："+(m.estimated_cost||0)+"\nTrace 条数："+((result.traces||[]).length)
+        }
+        function onRequestFailed(requestId,code,message){if(requestId===window.diagnosticsRequestId)window.diagnosticsText="读取失败："+code+" / "+message}
     }
 }

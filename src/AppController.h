@@ -4,6 +4,7 @@
 #include <QPointer>
 #include <QStringList>
 #include <QJsonArray>
+#include <QHash>
 #include <QUrl>
 
 #include "ChatMessageModel.h"
@@ -29,6 +30,8 @@ class DreamModule;
 class VisionService;
 class VisionRecognitionModule;
 class MorningLollipopModule;
+class AgentClient;
+class ChatAgentAdapter;
 
 class AppController final : public QObject
 {
@@ -56,6 +59,8 @@ class AppController final : public QObject
     Q_PROPERTY(QString aiStatus READ aiStatus NOTIFY aiStateChanged)
     Q_PROPERTY(QString aiBaseUrl READ aiBaseUrl NOTIFY aiStateChanged)
     Q_PROPERTY(QString aiModel READ aiModel NOTIFY aiStateChanged)
+    Q_PROPERTY(QString chatRouteMode READ chatRouteMode NOTIFY aiStateChanged)
+    Q_PROPERTY(QString chatRouteLabel READ chatRouteLabel NOTIFY aiStateChanged)
     Q_PROPERTY(QAbstractItemModel *diaryModel READ diaryModel CONSTANT)
     Q_PROPERTY(int diaryCount READ diaryCount NOTIFY diarySelectionChanged)
     Q_PROPERTY(QString selectedDiaryDate READ selectedDiaryDate NOTIFY diarySelectionChanged)
@@ -156,6 +161,8 @@ class AppController final : public QObject
     Q_PROPERTY(QString selectedLollipopPattern READ selectedLollipopPattern NOTIFY morningLollipopChanged)
 
 public:
+    SyncRepository *syncRepository(){return &m_storage;}
+    StorageService *storageService(){return &m_storage;}
     explicit AppController(QObject *parent = nullptr);
 
     int currentStateIndex() const;
@@ -179,6 +186,8 @@ public:
     QString aiStatus() const;
     QString aiBaseUrl() const;
     QString aiModel() const;
+    QString chatRouteMode() const;
+    QString chatRouteLabel() const;
     QAbstractItemModel *diaryModel();
     int diaryCount() const;
     QString selectedDiaryDate() const;
@@ -220,10 +229,9 @@ public:
 
     void attachWindow(QQuickWindow *window);
     void createTrayIcon();
+    void setAgentClient(AgentClient *client);
 
 public slots:
-    void exportCocosRoomState();
-    void openCocosRoomPrototype();
     void nextState();
     void previousState();
     void setState(int index);
@@ -232,6 +240,7 @@ public slots:
     void toggleWindowVisibility();
     void quitApplication();
     void sendMessage(const QString &text);
+    void setChatRouteMode(const QString &mode);
     void adjustPetStat(const QString &stat, int delta);
     void resetPetStats();
     void saveAiSettings(const QString &apiKey, const QString &baseUrl, const QString &model);
@@ -293,6 +302,7 @@ signals:
     void alwaysOnTopChanged();
     void petStatsChanged();
     void aiStateChanged();
+    void agentConfigurationChanged();
     void requestSettingsWindow();
     void requestDiaryWindow();
     void diarySelectionChanged();
@@ -324,6 +334,10 @@ private:
     void restoreWindowPosition();
     void ensureWindowOnScreen();
     void appendOfflineReply(const QString &userText);
+    void sendViaSelectedChatRoute(const QString &content, const QString &context,
+                                  const QString &attachmentName = QString());
+    void sendViaLegacyChat(const QString &content, const QString &context,
+                           const QString &fallbackReason = QString());
     int stateIndexForEmotion(const QString &emotion) const;
     void runNextPersonalityCase();
     void savePersonalityTrainingResults();
@@ -337,6 +351,12 @@ private:
     ChatMessageModel m_chatModel;
     PetStateEngine m_petStateEngine;
     AiService m_aiService;
+    AgentClient *m_agentClient = nullptr;
+    ChatAgentAdapter *m_chatAgent = nullptr;
+    QString m_chatRouteMode = QStringLiteral("agent_main");
+    QHash<QString, QString> m_agentTexts;
+    QHash<QString, QString> m_agentContexts;
+    QString m_legacyFallbackReason;
     ModuleManager m_moduleManager;
     ReverseDiaryModule *m_reverseDiary = nullptr;
     DiaryEntryModel m_diaryModel;

@@ -341,28 +341,6 @@ Window {
         }
     }
 
-    RoundButton {
-        id: roomButton
-        z: 20
-        width: 30
-        height: 30
-        anchors.right: parent.right
-        anchors.top: parent.top
-        text: "⌂"
-        font.pixelSize: 19
-        hoverEnabled: true
-        opacity: hovered ? 1.0 : 0.72
-        ToolTip.visible: hovered
-        ToolTip.text: "打开精灵房间"
-        onClicked: appController.openCocosRoomPrototype()
-        background: Rectangle {
-            radius: 15
-            color: roomButton.hovered ? "#F5C7C7" : "#F7E4DC"
-            border.color: "#A96767"
-            border.width: 1
-        }
-    }
-
     ChatWindow {
         id: chatWindow
         petWindow: root

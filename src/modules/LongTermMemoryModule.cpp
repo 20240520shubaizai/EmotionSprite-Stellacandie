@@ -6,7 +6,7 @@
 #include <QDateTime>
 #include <algorithm>
 
-LongTermMemoryModule::LongTermMemoryModule(DataRepository *r,AiService *ai,QObject *p):FeatureModule(p),m_repository(r),m_ai(ai)
+LongTermMemoryModule::LongTermMemoryModule(ConversationRepository *conversations,MemoryRepository *memories,AiService *ai,QObject *p):FeatureModule(p),m_conversations(conversations),m_repository(memories),m_ai(ai)
 {
     m_enabled=QSettings().value("modules/longTermMemoryEnabled",true).toBool();
     connect(ai,&AiService::memoryAnalysisCompleted,this,[this](const QJsonArray &items){
@@ -40,7 +40,7 @@ bool LongTermMemoryModule::isEnabled()const{return m_enabled;} void LongTermMemo
 void LongTermMemoryModule::analyzeRecentConversation()
 {
     if(!m_enabled)return;
-    const auto recent=m_repository->loadRecentMessages(6);
+    const auto recent=m_conversations->loadRecentMessages(6);
     QString lastUser; for(auto it=recent.crbegin();it!=recent.crend();++it)if(it->sender==QStringLiteral("user")){lastUser=it->text;break;}
     const QRegularExpression transactionRe(QStringLiteral("(?:提醒我|通知我|叫我|别让我忘|今天|明天|后天|\\d+天后|\\d{1,2}[点时].*(?:开会|会议|面试|考试|换|买|做))"));
     if(transactionRe.match(lastUser).hasMatch())return;

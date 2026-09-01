@@ -1,14 +1,15 @@
 #pragma once
 
 #include "FeatureModule.h"
-#include "../data/DataRepository.h"
+#include "../data/repositories/MemoryRepository.h"
+#include "../data/repositories/ReminderRepository.h"
 #include <QTimer>
 
 class ProactiveBehaviorModule final : public FeatureModule
 {
     Q_OBJECT
 public:
-    ProactiveBehaviorModule(DataRepository *repository,QObject *parent=nullptr);
+    ProactiveBehaviorModule(ReminderRepository *repository,MemoryRepository *memories,QObject *parent=nullptr);
     QString id()const override;QString displayName()const override;
     bool isEnabled()const override;void setEnabled(bool enabled)override;
     bool doNotDisturb()const;void setDoNotDisturb(bool enabled);
@@ -23,6 +24,6 @@ private:
     qint64 scheduleCognitive(CognitiveRecord record,const QString &payload);
     CognitiveRecord bestMatchingActive(const QString &subject)const;
     void seedLifestyleNudge();
-    DataRepository *m_repository=nullptr;QTimer m_timer;bool m_enabled=true;bool m_dnd=false;
+    ReminderRepository *m_repository=nullptr;MemoryRepository *m_memories=nullptr;QTimer m_timer;bool m_enabled=true;bool m_dnd=false;
     int m_dailyLimit=3;int m_quietStart=23;int m_quietEnd=8;
 };

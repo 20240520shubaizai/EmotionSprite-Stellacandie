@@ -65,7 +65,16 @@ Window {
                     Label { text: "当前状态：" + appController.currentStateName; color: "#9A7778"; font.pixelSize: 12 }
                 }
                 Item { Layout.fillWidth: true }
-                Label { text: appController.aiBusy || appController.visionBusy ? "正在思考…" : (appController.aiConfigured ? "AI在线模式" : "离线模式"); color: "#A96868"; font.pixelSize: 12 }
+                ToolButton {
+                    text: appController.aiBusy || appController.visionBusy ? "正在思考…" : appController.chatRouteLabel
+                    ToolTip.visible: hovered
+                    ToolTip.text: appController.aiStatus + "\n点击切换：Agent主链路 / 旧链路 / 强制离线"
+                    onClicked: {
+                        if (appController.chatRouteMode === "agent_main") appController.setChatRouteMode("legacy")
+                        else if (appController.chatRouteMode === "legacy") appController.setChatRouteMode("offline")
+                        else appController.setChatRouteMode("agent_main")
+                    }
+                }
                 ToolButton { text: "记忆"; Layout.preferredWidth: 45; onClicked: appController.openMemory() }
                 ToolButton { text: "零食"; Layout.preferredWidth: 45; onClicked: appController.openFileSnack() }
                 ToolButton { text: "魔法"; Layout.preferredWidth: 45; onClicked: appController.openSummaryMagic() }
