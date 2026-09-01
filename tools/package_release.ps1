@@ -8,6 +8,20 @@ $build = [IO.Path]::GetFullPath($BuildDirectory)
 $output = [IO.Path]::GetFullPath($OutputDirectory)
 if (!(Test-Path -LiteralPath (Join-Path $build 'EmotionSprite.exe'))) { throw 'Release executable is missing.' }
 if (!(Test-Path -LiteralPath (Join-Path $build 'agent-runtime\agent-core.exe'))) { throw 'Bundled Agent Runtime is missing.' }
+
+# A clean CI build contains the executable but not the deployable Qt runtime.
+# Make packaging self-contained instead of relying on a prior manual
+# windeployqt invocation in the developer build directory.
+$needsQtDeploy = !(Test-Path -LiteralPath (Join-Path $build 'D3Dcompiler_47.dll')) -or
+    !(Test-Path -LiteralPath (Join-Path $build 'platforms\qwindows.dll'))
+if ($needsQtDeploy) {
+    $windeployqt = Get-Command windeployqt.exe -ErrorAction SilentlyContinue
+    if (!$windeployqt) { throw 'windeployqt.exe is required to assemble the Windows runtime.' }
+    $qmlSource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\qml'))
+    & $windeployqt.Source --release --qmldir $qmlSource --dir $build (Join-Path $build 'EmotionSprite.exe')
+    if ($LASTEXITCODE -ne 0) { throw "windeployqt failed with exit code $LASTEXITCODE." }
+}
+
 New-Item -ItemType Directory -Force -Path $output | Out-Null
 $stage = Join-Path $output ("Stellacandie-$Version-stage")
 if (Test-Path -LiteralPath $stage) {
